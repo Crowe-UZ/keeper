@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<style>
+  body { width: 380px; margin: 0; padding: 12px; font: 13px system-ui, sans-serif; background: #1e1e24; color: #eee; }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  .tab { color: #aaa; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 8px; }
+  .row { display: flex; gap: 6px; margin: 8px 0; }
+  button { flex: 1; padding: 8px; border: 0; border-radius: 6px; cursor: pointer; font-weight: 600; background: #3b82f6; color: #fff; }
+  button.alt { background: #4b5563; }
+  button.small { flex: 0 0 auto; padding: 4px 8px; font-size: 12px; }
+  button:hover { filter: brightness(1.15); }
+  #err { color: #f87171; margin: 6px 0; }
+  .note { font-size: 12px; color: #aaa; margin: 4px 0; }
+  .warn { color: #fbbf24; }
+  .section { font-size: 12px; color: #aaa; text-transform: uppercase; margin: 10px 0 4px; }
+  .item { display: flex; align-items: center; gap: 6px; padding: 4px 0; }
+  .item .u { flex: 1; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #ccc; }
+  .tag { font-size: 11px; padding: 1px 5px; border-radius: 4px; background: #374151; }
+  .tag.best { background: #166534; }
+  .job { padding: 6px 0; border-top: 1px solid #333; }
+  .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bar { height: 4px; background: #333; border-radius: 2px; margin-top: 4px; }
+  .bar > div { height: 100%; background: #22c55e; border-radius: 2px; transition: width .3s; }
+  .st { color: #aaa; font-size: 12px; margin-top: 2px; }
+  .bad { color: #f87171; }
+  .loglink { color: #60a5fa; cursor: pointer; text-decoration: underline; font-size: 12px; }
+  .folder { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #ccc; margin: 4px 0; }
+  .folder .u { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+  .ver { color: #666; font-size: 11px; margin-top: 8px; }
+</style>
+</head>
+<body>
+  <h1>Качалка видео</h1>
+  <div class="tab" id="tabTitle"></div>
+  <div class="row">
+    <button id="video">⬇ Видео</button>
+    <button id="audio" class="alt">🎵 Звук</button>
+  </div>
+  <div class="folder">
+    <span>📁</span><span id="folderPath" class="u"></span>
+    <button id="chooseFolder" class="small alt">Сменить</button>
+  </div>
+  <div id="hint" class="note"></div>
+  <div id="caught"></div>
+  <div class="row">
+    <button id="all" class="alt">Все вкладки</button>
+    <button id="folder" class="alt">Папка</button>
+    <button id="logs" class="alt">Логи</button>
+    <button id="clear" class="alt">Очистить</button>
+  </div>
+  <div id="err"></div>
+  <div id="summary" class="note" style="color:#eee;font-weight:600"></div>
+  <div id="jobs"></div>
+  <div class="ver" id="ver"></div>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

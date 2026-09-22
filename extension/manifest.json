@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Качалка видео",
+  "version": "2.1",
+  "description": "Скачивает видео с любой вкладки: YouTube и 1000+ сайтов через yt-dlp, курсы и плееры — через перехват видеопотока",
+  "permissions": ["tabs", "scripting", "cookies", "webRequest", "storage", "contextMenus", "notifications"],
+  "host_permissions": ["<all_urls>"],
+  "icons": { "128": "icon.png" },
+  "action": { "default_popup": "popup.html", "default_title": "Скачать видео", "default_icon": "icon.png" },
+  "background": { "service_worker": "background.js", "type": "module" }
+}
