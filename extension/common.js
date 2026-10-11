@@ -85,19 +85,32 @@ export function groupVideos(caught) {
   }
   const all = [...groups.values()];
   const onPage = all.filter((g) => !g.frameId).length;
-  return all.map((g) => {
+  const videos = all.map((g) => {
     const meta = g.frameId ? frames[g.frameId] : onPage === 1 ? frames[0] : null;
     return {
       ...g,
       best: pickBest(g.items),
       duration: meta?.duration || 0,
       playing: !!meta?.playing,
+      thumb: meta?.thumb || "",
+      title: (g.frameId && meta?.title) || "",
       // адрес iframe плеера — чтобы подсветить его на странице
       src: g.frameId ? meta?.href : g.items.find((i) => i.kind === PLAYER)?.url,
       order: g.frameId && meta?.order >= 0 ? meta.order : Infinity,
       first: Math.min(...g.items.map((i) => i.first ?? i.time)),
     };
   }).sort((a, b) => (a.order - b.order) || (a.first - b.first));
+  // одинаковый заголовок у нескольких видео — значит, поймали общий текст страницы, а не название ролика
+  for (const v of videos) {
+    if (v.title && videos.filter((x) => x.title === v.title).length > 1) v.shared = true;
+  }
+  for (const v of videos) if (v.shared) v.title = "";
+  return videos;
+}
+
+// Как видео называется в списке: номер есть всегда, название — когда его удалось найти на странице
+export function videoName(videos, n) {
+  return videos[n].title ? `${n + 1}. ${videos[n].title}` : `Видео ${n + 1}`;
 }
 
 // Лучший пойманный поток: мастер-плейлист HLS (все качества) > плеер GetCourse > DASH > любой m3u8 > файл;
@@ -131,6 +144,7 @@ export async function buildJob(tab, mode, item, { title, why } = {}) {
     title: title || tab.title,
     page_url: tab.url,
     mode,
+    max_height: await getQuality(),
     sniffed: !!chosen,
     headers: chosen ? chosen.headers : {},
     cookies: await cookiesFor(urls),
@@ -144,9 +158,9 @@ export async function buildJob(tab, mode, item, { title, why } = {}) {
   };
 }
 
-// Имя файла — заголовок вкладки; если видео на странице несколько, добавляем номер
+// Имя файла — заголовок вкладки; если видео на странице несколько, добавляем номер и название (или «видео N»)
 export function videoTitle(tab, videos, n) {
-  return videos.length > 1 ? `${tab.title} — видео ${n + 1}` : tab.title;
+  return videos.length > 1 ? `${tab.title} — ${videoName(videos, n).replace(/^В/, "в")}` : tab.title;
 }
 
 // Задачи для вкладки: если на странице несколько видео — по задаче на каждое (лучший поток каждого)
@@ -172,12 +186,18 @@ export function clientLog(message, level = "error") {
   (level === "error" ? console.error : console.log)("[качалка]", message);
 }
 
-export async function send(job) {
+// Ограничение качества из окна расширения: высота кадра (1080, 720…), 0 — максимум
+export async function getQuality() {
+  return (await chrome.storage.local.get("quality")).quality || 0;
+}
+
+// force — качать, даже если это видео уже скачано. Иначе качалка откажет, и у ошибки будет duplicate
+export async function send(job, force = false) {
   const r = await apiUp("/download", {
     method: "POST",
-    body: JSON.stringify(job),
+    body: JSON.stringify({ ...job, force }),
   });
   const data = await r.json();
-  if (!r.ok) throw new Error(data.error);
+  if (!r.ok) throw Object.assign(new Error(data.error), { duplicate: !!data.duplicate });
   return data;
 }

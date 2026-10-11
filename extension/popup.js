@@ -1,10 +1,24 @@
-import { api, apiUp, startServer, isDown, buildJob, buildJobs, send, getCaught, groupVideos, videoTitle, isKnownSite, clientLog } from "./common.js";
+import {
+  api, apiUp, startServer, isDown, buildJob, buildJobs, send, getCaught, getQuality,
+  groupVideos, videoName, videoTitle, isKnownSite, clientLog,
+} from "./common.js";
 
 window.addEventListener("error", (e) => clientLog(`окно: ${e.message} @ ${e.filename}:${e.lineno}`));
 window.addEventListener("unhandledrejection", (e) => clientLog(`окно (promise): ${e.reason?.stack || e.reason}`));
 
 const $ = (id) => document.getElementById(id);
-const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+// Файлы расширения на диске обновились, а Chrome держит старые — перезагружаемся сами, без кнопки ⟳
+const onDisk = await fetch(chrome.runtime.getURL("manifest.json"), { cache: "no-store" }).then((r) => r.json()).catch(() => null);
+if (onDisk && onDisk.version !== chrome.runtime.getManifest().version) {
+  document.body.textContent = "Качалка обновилась — открой это окно ещё раз.";
+  setTimeout(() => chrome.runtime.reload(), 1200);
+  await new Promise(() => {});  // дальше старый код не выполняем
+}
+
+// обычно работаем с вкладкой, на которой открыли окно; ?tab=N — когда окно открыто отдельной страницей (для проверок)
+const asPage = +new URLSearchParams(location.search).get("tab");
+const [tab] = asPage ? [await chrome.tabs.get(asPage)] : await chrome.tabs.query({ active: true, currentWindow: true });
 $("tabTitle").textContent = tab?.title || "";
 $("tabTitle").title = tab?.title || "";
 
@@ -19,6 +33,7 @@ function showError(e) {
 
 async function run(fn) {
   $("err").textContent = "";
+  $("notice").innerHTML = "";
   try { await fn(); refresh(); } catch (e) { showError(e); }
 }
 
@@ -83,8 +98,11 @@ async function renderCaught() {
   const best = new Set(videos.map((v) => v.best));
   const html = !items.length ? "" : `<div class="section">Видео на странице<span>${videos.length > 1 ? videos.length : ""}</span></div>` + videos.map((v, n) => `
     <div class="item video ${v.playing ? "playing" : ""}" data-n="${n}">
-      <span class="name">Видео ${n + 1}</span>
-      <span class="u">${esc([v.duration ? clock(v.duration) : "", v.playing ? "играет" : "", kindName(v.best)].filter(Boolean).join(" · "))}</span>
+      <div class="thumb">${n + 1}</div>
+      <div class="info">
+        <span class="name u" title="${esc(videoName(videos, n))}">${esc(videoName(videos, n))}</span>
+        <span class="u">${esc([v.duration ? clock(v.duration) : "", v.playing ? "играет" : "", kindName(v.best)].filter(Boolean).join(" · "))}</span>
+      </div>
       <button class="small primary" data-mode="video">⬇ Видео</button>
       <button class="small" data-mode="audio" title="Только звук (mp3)">🎵</button>
     </div>`).join("") + `
@@ -95,23 +113,49 @@ async function renderCaught() {
       <button class="small" data-i="${i}">⬇</button>
     </div>`).join("") + "</details>";
   const open = $("caught").querySelector("details")?.open;
-  if (!draw($("caught"), html)) return;
-  if (open) $("caught").querySelector("details").open = true;
-
-  $("caught").querySelectorAll(".video").forEach((row) => {
-    const n = +row.dataset.n;
-    row.onmouseenter = () => highlight(videos[n], true);
-    row.onmouseleave = () => highlight(videos[n], false);
-    row.querySelectorAll("button").forEach((b) => {
-      b.onclick = () => run(async () => send(await buildJob(tab, b.dataset.mode, videos[n].best, {
-        title: videoTitle(tab, videos, n),
-        why: `видео ${n + 1} из ${videos.length} — выбрано в списке`,
-      })));
+  if (draw($("caught"), html)) {
+    if (open) $("caught").querySelector("details").open = true;
+    $("caught").querySelectorAll(".video").forEach((row) => {
+      const n = +row.dataset.n;
+      row.onmouseenter = () => highlight(videos[n], true);
+      row.onmouseleave = () => highlight(videos[n], false);
+      row.querySelectorAll("button").forEach((b) => {
+        b.onclick = () => run(async () => submit([await buildJob(tab, b.dataset.mode, videos[n].best, {
+          title: videoTitle(tab, videos, n),
+          why: `видео ${n + 1} из ${videos.length} — выбрано в списке`,
+        })]));
+      });
     });
+    $("caught").querySelectorAll("button[data-i]").forEach((b) => {
+      b.onclick = () => run(async () => submit([await buildJob(tab, "video", items[b.dataset.i])]));
+    });
+  }
+  // превью меняется, пока видео играет, — обновляем его мимо перерисовки, чтобы строка не мигала
+  $("caught").querySelectorAll(".video").forEach((row) => {
+    const thumb = videos[row.dataset.n]?.thumb || "";
+    const el = row.querySelector(".thumb");
+    if (el._src === thumb) return;
+    el._src = thumb;
+    el.style.backgroundImage = thumb ? `url("${thumb.replace(/["\\\n]/g, "")}")` : "";
+    el.classList.toggle("has", !!thumb);
   });
-  $("caught").querySelectorAll("button[data-i]").forEach((b) => {
-    b.onclick = () => run(async () => send(await buildJob(tab, "video", items[b.dataset.i])));
-  });
+}
+
+// Отправить задачи качалке. Уже скачанные она не берёт — про них спрашиваем, качать ли ещё раз
+async function submit(jobs, force = false) {
+  const skipped = [];
+  for (const job of jobs) {
+    try {
+      await send(job, force);
+    } catch (e) {
+      if (!e.duplicate) throw e;
+      skipped.push({ job, why: e.message });
+    }
+  }
+  if (!skipped.length) return;
+  const text = skipped.length === 1 ? skipped[0].why : `Пропущено ${skipped.length} видео: уже скачаны или качаются`;
+  $("notice").innerHTML = `<span>${esc(text)}</span><button class="small">Скачать ещё раз</button>`;
+  $("notice").querySelector("button").onclick = () => run(() => submit(skipped.map((s) => s.job), true));
 }
 
 // Показать на странице, какой плеер соответствует строке списка
@@ -133,7 +177,9 @@ function highlight(video, on) {
 }
 
 // ----- очередь загрузок -----
-const WAITING = ["подготовка", "склейка"];  // идёт работа, но процента нет — полоска «бегает»
+const WAITING = ["подготовка", "склейка", "отмена…"];  // идёт работа, но процента нет — полоска «бегает»
+const FINISHED = /^(готово|ошибка|отменено)/;  // такие «Очистить» убирает из списка
+const CANCELLABLE =["в очереди", "подготовка", "скачивается"];  // склейку прервать нельзя — она и так секунды
 
 function jobHtml(j) {
   const busy = j.status === "скачивается";
@@ -150,6 +196,10 @@ function jobHtml(j) {
       <div class="bar"><div style="width:${j.percent}%"></div></div>
       <div class="st">${esc(j.status)}${extra ? " · " + esc(extra) : ""}${j.error ? " — " + esc(j.error) : ""}</div>
       <div class="acts">${
+        CANCELLABLE.includes(j.status) ? `<button class="ghost small" data-act="/cancel" data-id="${esc(j.id)}">✕ Отмена</button>` : ""
+      }${
+        j.error || j.status === "отменено" ? `<button class="ghost small" data-act="/retry" data-id="${esc(j.id)}">↻ Повторить</button>` : ""
+      }${
         done && j.has_file ? `<button class="ghost small" data-act="/open-file" data-id="${esc(j.id)}">▶ Открыть</button><button class="ghost small" data-act="/show-file" data-id="${esc(j.id)}">📂 В папке</button>` : ""
       }${j.has_log ? `<button class="ghost small" data-act="/open-log" data-id="${esc(j.id)}">Лог</button>` : ""}</div>
     </div>`;
@@ -171,7 +221,7 @@ async function refresh() {
   $("ver").textContent = `v${chrome.runtime.getManifest().version} · yt-dlp ${ytdlp}`;
   const counts = [s.active ? `качается ${s.active}` : "", s.queued ? `в очереди ${s.queued}` : "", s.done ? `готово ${s.done}` : "", s.failed ? `ошибок ${s.failed}` : ""]
     .filter(Boolean).join(" · ");
-  draw($("queue"), !jobs.length ? "" : `<div class="section">Загрузки<span class="u">${counts}</span>${s.done || s.failed ? '<button class="ghost small" data-act="/clear" title="Убрать из списка готовые и ошибки (файлы остаются)">Очистить</button>' : ""}</div>`
+  draw($("queue"), !jobs.length ? "" : `<div class="section">Загрузки<span class="u">${counts}</span>${jobs.some((j) => FINISHED.test(j.status)) ? '<button class="ghost small" data-act="/clear" title="Убрать из списка готовые и ошибки (файлы остаются)">Очистить</button>' : ""}</div>`
     + jobs.map(jobHtml).join(""));
 }
 
@@ -188,12 +238,16 @@ $("queue").onclick = (e) => {
 const allTabs = (await chrome.tabs.query({})).filter((t) => /^https?:/.test(t.url));
 $("all").textContent = `Скачать со всех вкладок (${allTabs.length})`;
 
-const sendAll = async (t, mode) => { for (const job of await buildJobs(t, mode)) await send(job); };
-$("video").onclick = () => run(() => sendAll(tab, "video"));
-$("audio").onclick = () => run(() => sendAll(tab, "audio"));
+$("video").onclick = () => run(async () => submit(await buildJobs(tab, "video")));
+$("audio").onclick = () => run(async () => submit(await buildJobs(tab, "audio")));
 $("all").onclick = () => run(async () => {
-  for (const t of allTabs) await sendAll(t, "video");
+  const jobs = [];
+  for (const t of allTabs) jobs.push(...await buildJobs(t, "video"));
+  await submit(jobs);
 });
+
+$("quality").value = String(await getQuality());
+$("quality").onchange = () => chrome.storage.local.set({ quality: +$("quality").value });
 $("logs").onclick = () => run(() => apiUp("/open-logs"));
 $("folder").onclick = () => run(() => apiUp("/open-folder"));
 $("chooseFolder").onclick = () => run(async () => {

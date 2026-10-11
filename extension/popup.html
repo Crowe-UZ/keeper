@@ -9,6 +9,9 @@
     --ok: #34d399; --bad: #f87171; --warn: #fbbf24;
   }
   * { box-sizing: border-box; }
+  /* прокрутка колесом работает, но сама полоса не видна — она портила вид */
+  html { scrollbar-width: none; }
+  ::-webkit-scrollbar { display: none; }
   body { width: 400px; margin: 0; padding: 14px; font: 13px/1.4 "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); }
   .u { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
@@ -37,6 +40,7 @@
   .main #audio { flex: 0 0 34%; }
 
   .folder { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin: 10px 0 0; padding: 4px 4px 4px 10px; background: var(--card); border-radius: 8px; }
+  .folder + .folder { margin-top: 6px; }
   .folder .u { flex: 1; direction: rtl; text-align: left; }
   .note { font-size: 12px; color: var(--muted); margin: 10px 2px 0; }
   .warn { color: var(--warn); }
@@ -49,10 +53,18 @@
 
   .item { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
   .item .u { flex: 1; font-size: 12px; color: var(--muted); }
-  .item.video { padding: 8px 8px 8px 10px; margin-bottom: 6px; background: var(--card); border-radius: 10px; border: 1px solid transparent; }
+  .item.video { padding: 8px; margin-bottom: 6px; background: var(--card); border-radius: 10px; border: 1px solid transparent; }
   .item.video:hover { background: var(--card-hover); border-color: var(--accent); }
-  .item.video .name { font-weight: 600; white-space: nowrap; }
+  .item.video .thumb { flex: 0 0 64px; height: 36px; border-radius: 5px; background: var(--line) center / cover no-repeat; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; }
+  .item.video .thumb.has { color: transparent; }
+  .item.video .info { flex: 1; min-width: 0; }
+  .item.video .name { font-weight: 600; }
+  .item.video .info .u { display: block; }
   .item.video.playing .name::before { content: "▶ "; color: var(--ok); }
+  select { font: inherit; font-size: 12px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; margin: 2px 4px 2px 0; cursor: pointer; }
+  #notice { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--warn); margin: 8px 0 0; padding: 6px 6px 6px 10px; background: var(--card); border-radius: 8px; }
+  #notice:empty { display: none; }
+  #notice span { flex: 1; }
   .tag { font-size: 11px; padding: 1px 6px; border-radius: 5px; background: var(--line); white-space: nowrap; }
   .tag.best { background: #14532d; color: #bbf7d0; }
   details { margin-top: 2px; }
@@ -95,8 +107,20 @@
     <button id="folder" class="ghost small">Открыть</button>
     <button id="chooseFolder" class="ghost small">Сменить</button>
   </div>
+  <div class="folder">
+    <span>⚙️</span><span class="u">Качество видео</span>
+    <select id="quality">
+      <option value="0">Максимальное</option>
+      <option value="2160">до 4K (2160p)</option>
+      <option value="1440">до 1440p</option>
+      <option value="1080">до 1080p</option>
+      <option value="720">до 720p</option>
+      <option value="480">до 480p</option>
+    </select>
+  </div>
   <div id="hint" class="note"></div>
   <div id="err"></div>
+  <div id="notice"></div>
   <div id="caught"></div>
   <div id="queue"></div>
   <footer>

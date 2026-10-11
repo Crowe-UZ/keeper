@@ -112,33 +112,76 @@ chrome.tabs.onRemoved.addListener((tabId) => chrome.storage.session.remove("tab_
 
 // Страница могла открыться до установки расширения — тогда перехват её пропустил.
 // По запросу окна ищем плееры прямо в разметке страницы — во всех её фреймах.
-// Заодно узнаём про каждый фрейм: какой он по счёту на странице, длительность видео, играет ли оно.
+// Заодно узнаём про каждый фрейм: какой он по счёту на странице, длительность видео, играет ли оно,
+// кадр для превью и — если получится — заголовок, который стоит на странице над плеером.
+// Всё это подсказки: сайтов тысячи, и где не угадали — в окне остаётся просто «Видео N».
 async function scanTab(tabId) {
   try {
     const results = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
       func: () => {
-        const srcs = (sel) => [...document.querySelectorAll(sel)]
-          .map((e) => e.src || e.dataset?.src || "")
-          .filter((u) => /^https?:/.test(u));
+        const PLAYERS = "iframe, video";
+        const srcOf = (e) => e.src || e.dataset?.src || "";
+        const srcs = (sel) => [...document.querySelectorAll(sel)].map(srcOf).filter((u) => /^https?:/.test(u));
+
+        // Заголовок плеера — ближайший короткий текст прямо над ним. Поднимаемся по вложенности, пока
+        // блок относится только к этому плееру: текст над блоком с несколькими плеерами — общий, не его.
+        const titleOf = (el) => {
+          for (let node = el, up = 0; node.parentElement && up < 6; node = node.parentElement, up++) {
+            for (let s = node.previousElementSibling, seen = 0; s && seen < 3; s = s.previousElementSibling) {
+              // <style>, <script> и скрытые блоки на странице не видны, а «текст» у них есть — пропускаем
+              if (s.matches("style, script, noscript, template, link, meta") || !s.getClientRects().length) continue;
+              seen++;
+              if (s.matches(PLAYERS) || s.querySelector(PLAYERS)) return "";  // выше — уже другой плеер
+              const head = s.matches("h1, h2, h3, h4, h5, h6") ? s : s.querySelector("h1, h2, h3, h4, h5, h6, strong, b");
+              const text = ((head || s).innerText || "").trim().replace(/\s+/g, " ");
+              if (text.length >= 3 && text.length <= 100) return text;
+              if (text.length > 100) return "";  // абзац описания, а не заголовок
+            }
+            if (node.parentElement.querySelectorAll(PLAYERS).length > 1) return "";
+          }
+          return "";
+        };
+
         const videos = [...document.querySelectorAll("video")];
         const v = videos.find((x) => !x.paused) || videos[0];
+        let thumb = "";
+        try {
+          if (v && v.currentTime > 0 && v.readyState >= 2 && v.videoWidth) {
+            const c = document.createElement("canvas");
+            c.width = 160;
+            c.height = Math.round(160 * v.videoHeight / v.videoWidth);
+            c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+            thumb = c.toDataURL("image/jpeg", 0.6);
+          }
+        } catch { /* чужое видео без разрешения на чтение кадров — останемся с обложкой */ }
+        thumb ||= v?.poster || "";
+        if (!thumb && window !== top) {  // внутри плеера обложка обычно лежит картинкой или фоном блока
+          const el = document.querySelector('[class*="poster" i], [class*="preview" i], [class*="cover" i], [class*="thumb" i]');
+          const bg = el && getComputedStyle(el).backgroundImage.match(/url\(["']?([^"')]+)/)?.[1];
+          thumb = bg || (el?.tagName === "IMG" ? el.src : el?.querySelector("img")?.src) || "";
+        }
+
         return {
           href: location.href,
-          iframes: srcs("iframe"),
+          iframes: [...document.querySelectorAll("iframe")].map((e) => ({ src: srcOf(e), title: titleOf(e) }))
+            .filter((f) => /^https?:/.test(f.src)),
           media: srcs("video, source"),
           duration: v && isFinite(v.duration) ? Math.round(v.duration) : 0,
           playing: !!v && !v.paused,
+          thumb: /^(https?:|data:image\/)/.test(thumb) ? thumb : "",
         };
       },
     });
-    const order = results.find((r) => r.frameId === 0)?.result?.iframes || [];
+    const players = results.find((r) => r.frameId === 0)?.result?.iframes || [];
     const frames = {};
     const found = [];
     const add = (url, kind, frameId) => found.push({ url, kind, frameId, headers: {}, time: Date.now(), master: false });
     for (const { frameId, result: r } of results) {
       if (!r) continue;
-      frames[frameId] = { href: r.href, duration: r.duration, playing: r.playing, order: order.indexOf(r.href) };
+      const order = players.findIndex((p) => p.src === r.href);
+      frames[frameId] = { href: r.href, duration: r.duration, playing: r.playing, thumb: r.thumb, order, title: players[order]?.title || "" };
+      r.iframes = r.iframes.map((f) => f.src);
       if (frameId && SIGN_PLAYER_RE.test(r.href)) add(r.href, PLAYER, frameId);
       for (const url of r.iframes) if (SIGN_PLAYER_RE.test(url)) add(url, PLAYER);
       for (const url of r.media) {
@@ -173,10 +216,16 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     if (info.menuItemId === "dl-link") {
       await send(await buildJob({ ...tab, url: info.linkUrl || info.srcUrl, id: -1 }, "video"));
     } else {
-      for (const job of await buildJobs(tab, "video")) await send(job);
+      let sent = 0;
+      for (const job of await buildJobs(tab, "video")) {
+        // уже скачанное из меню не перекачиваем; «скачать ещё раз» есть в окне расширения
+        try { await send(job); sent++; } catch (e) { if (!e.duplicate) throw e; notify("Пропущено", e.message); }
+      }
+      if (!sent) return;
     }
     notify("Скачивание началось", tab.title);
   } catch (e) {
+    if (e.duplicate) return notify("Пропущено", e.message);
     notify("Не получилось скачать", e.message);
     clientLog(`меню: ${e.stack || e}`);
   }
