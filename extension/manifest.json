@@ -1,12 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "Улов",
-  "version": "3.5",
+  "name": "Keeper",
+  "version": "3.6",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArJv/70QiVa/JaUnzxLLAo0sBVe8N82myv155AH+uaA1K2HgW/GO2/i5MbXvgmfGs6Tn6QAhTIUw5R+jmWiyjWUDwBEIiwj6fLEn1jvnakevGRKGIM+SAvkLXYmvzvzgJKadjOtyO2bx/26fCCj+/waEdb5NLT2Ebnj4cLFTK3Xv7o1YDjrZrI+BT0IkBLjTpfdKP7ldsLMv1TAINhITSHkhopkGHmVaRF29wX0oMZ12eIkmH/9dqRCp5od1b1vfq1o4VRzQM7DZNVh/HNbI3DZpDcePrwCIuKAjivO3Fcp1afdnTNL6UtuuuTb8SZ4aptwJx9LS6XcOpcgB018bfrwIDAQAB",
   "description": "Сохраняет видео, звук и текст речи с открытой вкладки: YouTube, VK, Rutube, уроки курсов и ещё около 1000 сайтов",
   "permissions": ["tabs", "scripting", "cookies", "webRequest", "storage", "contextMenus", "notifications", "nativeMessaging"],
   "host_permissions": ["<all_urls>"],
   "icons": { "128": "icon.png" },
-  "action": { "default_popup": "popup.html", "default_title": "Улов — видео, звук и текст с этой страницы", "default_icon": "icon.png" },
+  "action": { "default_popup": "popup.html", "default_title": "Keeper — видео, звук и текст с этой страницы", "default_icon": "icon.png" },
   "background": { "service_worker": "background.js", "type": "module" }
 }

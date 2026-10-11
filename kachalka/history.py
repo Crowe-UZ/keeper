@@ -3,7 +3,7 @@ import json
 import os
 from datetime import datetime
 
-from .config import (HISTORY_FILE)
+from .config import HISTORY_FILE, write_atomic
 from .state import lock
 
 
@@ -28,7 +28,7 @@ def remember(job, path):
     with lock:
         items = [h for h in load_history() if h.get("key") != job["key"]]
         items.append({"key": job["key"], "file": path, "time": datetime.now().isoformat(timespec="seconds")})
-        HISTORY_FILE.write_text(json.dumps(items[-1000:], ensure_ascii=False, indent=1), encoding="utf-8")
+        write_atomic(HISTORY_FILE, json.dumps(items[-1000:], ensure_ascii=False, indent=1))
 
 
 def already_downloaded(key):

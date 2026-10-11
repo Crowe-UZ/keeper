@@ -16,6 +16,7 @@ start.bat — запасной способ, с окном.
 
 Сам код — в пакете kachalka/: этот файл только запускает его части.
 """
+import socket
 import sys
 import threading
 import time
@@ -30,6 +31,17 @@ from kachalka.lifecycle import code_watch, idle_watch, run_tray, shutdown, threa
 from kachalka.system import FFMPEG_DIR, environment
 
 
+class OneCopyServer(ThreadingHTTPServer):
+    """Порт достаётся только одной запущенной копии. Обычный HTTPServer разрешает повторное занятие адреса,
+    и на Windows вторая копия спокойно садилась на тот же порт: запросы шли первой, а вторая мешала ей."""
+    allow_reuse_address = False
+
+    def server_bind(self):
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def start(target):
     threading.Thread(target=target, daemon=True).start()
 
@@ -37,7 +49,7 @@ def start(target):
 def main():
     threading.excepthook = thread_crash  # любые падения фоновых потоков — в kachalka.log
     try:
-        server = ThreadingHTTPServer((HOST, PORT), Handler)
+        server = OneCopyServer((HOST, PORT), Handler)
     except OSError as e:
         log.error(f"Не могу занять порт {PORT}: {e}. Похоже, качалка уже запущена.")
         sys.exit(1)
@@ -66,4 +78,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        log.exception("программа не смогла запуститься")  # без окна эту ошибку больше негде увидеть
+        raise

@@ -11,7 +11,7 @@ const $ = (id) => document.getElementById(id);
 // Файлы расширения на диске обновились, а Chrome держит старые — перезагружаемся сами, без кнопки ⟳
 const onDisk = await fetch(chrome.runtime.getURL("manifest.json"), { cache: "no-store" }).then((r) => r.json()).catch(() => null);
 if (onDisk && onDisk.version !== chrome.runtime.getManifest().version) {
-  document.body.textContent = "«Улов» обновился — открой это окно ещё раз.";
+  document.body.textContent = "Keeper обновился — открой это окно ещё раз.";
   setTimeout(() => chrome.runtime.reload(), 1200);
   await new Promise(() => {});  // дальше старый код не выполняем
 }
@@ -175,17 +175,18 @@ function highlight(video, on) {
 }
 
 // ----- очередь загрузок -----
-const WAITING = ["подготовка", "склейка", "звук из видео", "отмена…"];  // идёт работа, но процента нет — полоска «бегает»
+const WAITING = ["подготовка", "склейка", "звук из видео", "ждёт распознавания", "отмена…"];  // идёт работа, но процента нет — полоска «бегает»
 const WITH_PERCENT = ["скачивается", "загрузка модели", "распознавание"];  // у этих этапов есть процент
 // как этапы называются для человека (качалка отдаёт короткие служебные названия)
 const STAGE = {
   "подготовка": "начинаю", "склейка": "собираю файл", "звук из видео": "вынимаю звук",
   "загрузка модели": "скачиваю распознавание речи (один раз)", "распознавание": "распознаю речь",
+  "ждёт распознавания": "ждёт своей очереди на распознавание",
 };
 const ICON = { video: "🎬", audio: "🎵", text: "📝" };
 const NAME = { video: "видео", audio: "звук", text: "текст" };
 const FINISHED = /^(готово|ошибка|отменено)/;  // такие «Очистить» убирает из списка
-const CANCELLABLE = ["в очереди", "подготовка", "скачивается", "загрузка модели", "распознавание"];  // склейку прервать нельзя — она и так секунды
+const CANCELLABLE = ["в очереди", "подготовка", "скачивается", "ждёт распознавания", "загрузка модели", "распознавание"];  // склейку прервать нельзя — она и так секунды
 
 function jobHtml(j) {
   const busy = j.status === "скачивается";
@@ -244,8 +245,15 @@ $("queue").onclick = (e) => {
   });
 };
 
-const allTabs = (await chrome.tabs.query({})).filter((t) => /^https?:/.test(t.url));
-$("all").textContent = `Скачать со всех вкладок (${allTabs.length})`;
+// Только вкладки, где есть что качать: известный сайт или пойманное видео. Раньше брались все открытые вкладки,
+// и программа шла на страницы почты и банка с их cookies
+const allTabs = [];
+for (const t of await chrome.tabs.query({})) {
+  if (!/^https?:/.test(t.url)) continue;
+  if (isKnownSite(t.url) || (await getCaught(t.id)).items.length) allTabs.push(t);
+}
+$("all").textContent = `Скачать со всех вкладок с видео (${allTabs.length})`;
+$("all").disabled = !allTabs.length;
 
 $("go").onclick = () => run(async () => submit(await buildJobs(tab)));
 $("all").onclick = () => run(async () => {

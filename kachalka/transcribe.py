@@ -6,6 +6,7 @@
 """
 import re
 import subprocess
+import tempfile
 import threading
 from array import array
 from pathlib import Path
@@ -79,21 +80,26 @@ def duration_of(media):
 
 def read_audio(media, limit=None):
     """Звук из любого аудио или видео — порциями по 10 секунд, 16 кГц моно. limit — взять только первые секунды."""
-    cmd = [str(Path(FFMPEG_DIR) / "ffmpeg"), "-v", "error", "-i", str(media)]
+    cmd = [str(Path(FFMPEG_DIR) / "ffmpeg"), "-nostdin", "-v", "error", "-i", str(media)]
     cmd += ["-t", str(limit)] if limit else []
-    ff = subprocess.Popen(cmd + ["-vn", "-ac", "1", "-ar", str(RATE), "-f", "f32le", "-"],
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=NO_WINDOW)
-    try:
-        while raw := ff.stdout.read(RATE * 4 * 10):
-            chunk = array("f")
-            chunk.frombytes(raw[:len(raw) - len(raw) % 4])
-            yield chunk
-        ff.wait(timeout=30)
-        if ff.returncode:
-            raise RuntimeError("ffmpeg не смог прочитать звук: " + ff.stderr.read().decode("utf-8", "replace")[-300:])
-    finally:
-        if ff.poll() is None:  # нас прервали посреди файла — ffmpeg дальше не нужен
-            ff.kill()
+    # Сообщения ffmpeg — во временный файл, а не в трубу: на битой записи их тысячи, труба переполняется,
+    # ffmpeg встаёт на записи, мы — на чтении звука, и распознавание висит вечно.
+    with tempfile.TemporaryFile() as errors:
+        ff = subprocess.Popen(cmd + ["-vn", "-ac", "1", "-ar", str(RATE), "-f", "f32le", "-"], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=errors, creationflags=NO_WINDOW)
+        try:
+            while raw := ff.stdout.read(RATE * 4 * 10):
+                chunk = array("f")
+                chunk.frombytes(raw[:len(raw) - len(raw) % 4])
+                yield chunk
+            ff.wait(timeout=30)
+            if ff.returncode:
+                errors.seek(0)
+                raise RuntimeError("Не получилось прочитать звук из файла: " + errors.read().decode("utf-8", "replace")[-300:])
+        finally:
+            if ff.poll() is None:  # нас прервали посреди файла — ffmpeg дальше не нужен
+                ff.kill()
+            ff.stdout.close()
 
 
 def speech_pieces(media, vad_path, limit=None, should_stop=lambda: False):
@@ -160,20 +166,31 @@ def detect_model(media, language, vad_path, on_progress, should_stop):
     return pick_model("auto", " ".join(sample))
 
 
+def wait_turn(on_stage, should_stop):
+    """Дождаться своей очереди на распознавание. Ждём короткими шагами, чтобы «Отмена» действовала и в ожидании."""
+    if one_at_a_time.acquire(blocking=False):
+        return
+    on_stage("ждёт распознавания", 0)
+    while not one_at_a_time.acquire(timeout=0.5):
+        if should_stop():
+            raise Cancelled("распознавание прервано")
+
+
 def transcribe(media, language="auto", on_stage=lambda stage, percent: None, should_stop=lambda: False):
     """Распознать речь в файле. Возвращает (текст абзацами, имя модели).
     on_stage(этап, процент) — «загрузка модели» или «распознавание»; should_stop() — пора прерваться."""
     try:
         import sherpa_onnx  # noqa: F401 — проверяем, что движок распознавания установлен, до долгой работы
     except ImportError as e:
-        raise RuntimeError("Распознавание речи не установлено. Запусти install.bat в папке download_web.") from e
+        raise RuntimeError("Распознавание речи не установлено. Запусти install.bat в папке программы.") from e
     if not FFMPEG_DIR:
         raise RuntimeError("Для распознавания нужен ffmpeg — он достаёт звук из файла.")
 
     def loading(percent):
         on_stage("загрузка модели", percent)
 
-    with one_at_a_time:
+    wait_turn(on_stage, should_stop)
+    try:
         vad_path = ensure_vad(loading, should_stop)
         name = detect_model(media, language, vad_path, loading, should_stop)
         rec = recognizer(name, loading, should_stop)
@@ -184,5 +201,7 @@ def transcribe(media, language="auto", on_stage=lambda stage, percent: None, sho
             length = len(samples) / RATE
             pieces.append((start, length, recognize(rec, samples)))
             on_stage("распознавание", round(min(99.0, (start + length) * 100 / total), 1) if total else 0)
+    finally:
+        one_at_a_time.release()
     log.debug(f"распознано кусков: {len(pieces)}, модель {name}, файл {Path(media).name}")
     return to_text(pieces), name

@@ -15,6 +15,14 @@ SETTINGS_FILE = ROOT / "settings.json"
 DEFAULT_SAVE_DIR = Path.home() / "Downloads" / "Videos"
 
 
+def write_atomic(path, text):
+    """Записать файл целиком или не записать вовсе: обрыв посреди записи не должен оставить полфайла
+    (битые настройки молча откатывали выбранную папку, битая история — память о скачанном)."""
+    tmp = path.with_name(path.name + ".new")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def load_settings():
     try:
         return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
@@ -23,7 +31,7 @@ def load_settings():
 
 
 def save_settings(**fields):
-    SETTINGS_FILE.write_text(json.dumps({**load_settings(), **fields}, ensure_ascii=False), encoding="utf-8")
+    write_atomic(SETTINGS_FILE, json.dumps({**load_settings(), **fields}, ensure_ascii=False))
 
 
 def load_save_dir():
@@ -57,7 +65,8 @@ _console.setLevel(logging.INFO)
 log.addHandler(_file)
 log.addHandler(_console)
 
-ACTIVE = ("подготовка", "скачивается", "склейка", "звук из видео", "загрузка модели", "распознавание", "отмена…")  # статусы, при которых задача занимает обработчик
+ACTIVE = ("подготовка", "скачивается", "склейка", "звук из видео", "ждёт распознавания", "загрузка модели",
+          "распознавание", "отмена…")  # статусы, при которых задача занимает обработчик
 FINAL = ("готово", "ошибка", "отменено")  # с этого начинается статус завершённой задачи
 HEIGHTS = (2160, 1440, 1080, 720, 480, 360)  # допустимые ограничения качества; 0 — без ограничения
 HISTORY_FILE = ROOT / "history.json"  # что уже скачано — чтобы не качать второй раз

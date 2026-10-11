@@ -28,6 +28,14 @@ chrome.webRequest.onSendHeaders.addListener((d) => {
 chrome.webRequest.onHeadersReceived.addListener((d) => {
   if (d.tabId < 0 || IGNORE_HOSTS.test(new URL(d.url).hostname)) return;
   if (DRM_RE.test(d.url) && d.method === "POST") return void markDrm(d.tabId);
+  const redirect = d.statusCode >= 300 && d.statusCode < 400;
+  // Страница загружается заново (переход или F5) — всё пойманное раньше уже не про неё. Раньше список
+  // сбрасывался только при смене адреса, и после F5 в окне оставались старые видео с протухшими ссылками.
+  if (d.type === "main_frame" && !redirect) resetTab(d.tabId);
+  // Заново загрузился один плеер — его прежние потоки тоже устарели
+  if (d.type === "sub_frame" && !redirect) dropFrame(d.tabId, d.frameId);
+  // Редирект и ошибка — не видео: иначе один ролик двоился, а «лучшей» становилась мёртвая ссылка
+  if (d.statusCode !== 200 && d.statusCode !== 206) return;
 
   if (d.type === "sub_frame" && SIGN_PLAYER_RE.test(d.url)) {
     return void addItem(d.tabId, { url: d.url, kind: PLAYER, frameId: d.frameId, headers: reqHeaders.get(d.requestId) || {}, time: Date.now(), master: false });
@@ -41,8 +49,10 @@ chrome.webRequest.onHeadersReceived.addListener((d) => {
   if (!kind) return;
 
   const headers = reqHeaders.get(d.requestId) || {};
-  addItem(d.tabId, { url: d.url, kind, frameId: d.frameId, headers, time: Date.now(), master: false }).then(() => {
-    if (kind === "HLS") checkMaster(d.tabId, d.url, headers);
+  const item = { url: d.url, kind, frameId: d.frameId, headers, time: Date.now(), master: false };
+  addItem(d.tabId, item).then(() => {
+    // плейлист читаем один раз: плеер перезапрашивает его каждые несколько секунд, а нам хватит первого ответа
+    if (kind === "HLS" && !checked.has(d.tabId + " " + itemKey(item))) checkMaster(d.tabId, item);
   });
 }, { urls: ["<all_urls>"] }, ["responseHeaders"]);
 
@@ -55,8 +65,18 @@ function mutate(tabId, fn) {
     data.items = data.items.slice(-150);
     await chrome.storage.session.set({ ["tab_" + tabId]: data });
     updateBadge(tabId, data);
-  }).catch(() => {});
+  }).catch((e) => clientLog(`фон: не записал потоки вкладки ${tabId}: ${e?.message || e}`));  // например, кончилось место в хранилище
   return chain;
+}
+
+// Через ту же очередь, что и добавление: иначе уже начатая запись вернула бы старые потоки обратно
+function resetTab(tabId) {
+  for (const key of checked) if (key.startsWith(tabId + " ")) checked.delete(key);
+  return mutate(tabId, (data) => { data.items = []; data.frames = {}; data.drm = false; });
+}
+
+function dropFrame(tabId, frameId) {
+  return mutate(tabId, (data) => { data.items = data.items.filter((i) => i.frameId !== frameId); });
 }
 
 // fresh=false — поток найден в разметке, а не в сети: свежую ссылку и заголовки уже пойманного не трогаем
@@ -75,10 +95,17 @@ function markDrm(tabId) {
   return mutate(tabId, (data) => { data.drm = true; });
 }
 
+const checked = new Set();  // «вкладка ключ-потока» — плейлисты, которые уже прочитаны
+
 // Мастер-плейлист HLS содержит список качеств — именно его надо качать, чтобы взять лучшее
-async function checkMaster(tabId, url) {
+async function checkMaster(tabId, item) {
+  const key = tabId + " " + itemKey(item);
+  checked.add(key);
   try {
-    const text = await (await fetch(url, { credentials: "include" })).text();
+    const resp = await fetch(item.url, { credentials: "include", signal: AbortSignal.timeout(5000) });
+    if (!resp.ok) throw new Error("ответ " + resp.status);
+    const text = await resp.text();
+    const url = resp.url || item.url;  // после редиректа относительные адреса качеств считаются от итогового адреса
     const master = text.includes("#EXT-X-STREAM-INF");
     // обычное AES-128 шифрование HLS — не DRM, его yt-dlp снимает сам; DRM — это Widevine/FairPlay/PlayReady
     const drm = /#EXT-X-(SESSION-)?KEY:.*KEYFORMAT="(urn:uuid|com\.apple\.streamingkeydelivery|com\.microsoft)/i.test(text);
@@ -88,13 +115,14 @@ async function checkMaster(tabId, url) {
       try { return norm(new URL(u.trim(), url).href); } catch { return null; }
     }).filter(Boolean);
     await mutate(tabId, (data) => {
-      const it = data.items.find((i) => i.url === url);
+      const it = data.items.find((i) => itemKey(i) === itemKey(item));  // по ключу: ссылку за это время могли перезапросить с новым токеном
       if (it) Object.assign(it, { master, variants });
       if (drm) data.drm = true;
     });
   } catch (e) {
-    // не смогли прочитать — не страшно, качалка разберётся сама; но в консоль расширения запишем
-    console.log("[качалка] не прочитал плейлист", url, e);
+    // не смогли прочитать — не страшно, программа разберётся сама; в следующий раз попробуем снова
+    checked.delete(key);
+    console.log("[keeper] не прочитал плейлист", item.url, e);
   }
 }
 
@@ -104,11 +132,10 @@ function updateBadge(tabId, data) {
   chrome.action.setBadgeText({ tabId, text: n ? String(n) : data.drm ? "DRM" : "" }).catch(() => {});
 }
 
-// Новая страница во вкладке — старые пойманные потоки уже не про неё
-chrome.tabs.onUpdated.addListener((tabId, info) => {
-  if (info.status === "loading" && info.url) chrome.storage.session.remove("tab_" + tabId);
-});
-chrome.tabs.onRemoved.addListener((tabId) => chrome.storage.session.remove("tab_" + tabId));
+// Вкладку закрыли или заменили — её потоки больше не нужны (сброс при загрузке страницы — в onHeadersReceived)
+const forget = (tabId) => chain.then(() => chrome.storage.session.remove("tab_" + tabId)).catch(() => {});
+chrome.tabs.onRemoved.addListener(forget);
+chrome.tabs.onReplaced.addListener((_added, removed) => forget(removed));
 
 // Страница могла открыться до установки расширения — тогда перехват её пропустил.
 // По запросу окна ищем плееры прямо в разметке страницы — во всех её фреймах.
@@ -194,7 +221,7 @@ async function scanTab(tabId) {
       for (const item of found) upsert(data, item, false);
     });
   } catch (e) {
-    console.log("[качалка] не смог просканировать вкладку", tabId, e);
+    console.log("[keeper] не смог просканировать вкладку", tabId, e);
   }
 }
 
@@ -207,8 +234,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
 
 // ---------- меню правой кнопки ----------
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({ id: "dl-link", title: "Улов: скачать по ссылке", contexts: ["link", "video"] });
-  chrome.contextMenus.create({ id: "dl-page", title: "Улов: скачать с этой вкладки", contexts: ["page"] });
+  chrome.contextMenus.create({ id: "dl-link", title: "Keeper: скачать по ссылке", contexts: ["link", "video"] });
+  chrome.contextMenus.create({ id: "dl-page", title: "Keeper: скачать с этой вкладки", contexts: ["page"] });
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {

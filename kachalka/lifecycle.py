@@ -1,4 +1,6 @@
 """Значок в трее и завершение: выход по простою, перезапуск при обновлении кода, уборка."""
+import sys
+from pathlib import Path
 import logging
 import os
 import subprocess
@@ -31,7 +33,7 @@ def run_tray():
             pystray.MenuItem("Логи", lambda: open_path(LOG_DIR)),
             pystray.MenuItem("Выход", lambda: shutdown("выход из меню в трее")),
         )
-        state.tray = pystray.Icon("kachalka", Image.open(ICON), "Улов", menu)
+        state.tray = pystray.Icon("kachalka", Image.open(ICON), "Keeper", menu)
     except Exception as e:  # noqa: BLE001 — значок необязателен: нет библиотеки, нет иконки, нет рабочего стола — качаем и без него
         return log.warning(f"значок в трее недоступен ({e!r}) — работаю без него")
     threading.Thread(target=tray_status, daemon=True).start()
@@ -45,7 +47,7 @@ def tray_status():
         line = status_line()
         if line != shown:
             shown = line
-            state.tray.title = "Улов — " + line.lower()
+            state.tray.title = "Keeper — " + line.lower()
             state.tray.update_menu()
 
 
@@ -57,7 +59,20 @@ def idle_watch():
         if s["active"] or s["queued"]:
             state.last_activity = time.time()
         elif time.time() - state.last_activity > IDLE_EXIT:
+            start_update()
             shutdown(f"{IDLE_EXIT // 60} минут без дела")
+
+
+def start_update():
+    """Перед выходом по простою запустить обновление yt-dlp отдельным процессом: оно проверит, пора ли (раз в сутки),
+    и сделает своё дело, когда нас уже не будет. Раньше обновление шло перед запуском, и окно ждало до 90 секунд."""
+    python = Path(sys.executable).with_name("python.exe")
+    try:
+        subprocess.Popen([str(python), str(ROOT / "launcher.py"), "--update"], cwd=ROOT, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=subprocess.DETACHED_PROCESS | NO_WINDOW)
+    except OSError as e:
+        log.warning(f"не смог запустить обновление yt-dlp: {e!r}")
 
 
 def code_watch():

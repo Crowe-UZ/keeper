@@ -6,6 +6,7 @@
 
   launcher.py            — так его запускает Chrome (через host.bat)
   launcher.py --install  — прописать хост в Chrome (делает install.bat, один раз)
+  launcher.py --update   — обновить yt-dlp; программа зовёт это сама, когда закрывается по простою
 """
 import base64
 import hashlib
@@ -23,6 +24,7 @@ HOST_NAME = "com.kachalka.host"
 PORT = int(os.environ.get("KACHALKA_PORT", 5577))
 SETTINGS_FILE = HERE / "settings.json"
 UPDATE_EVERY = 24 * 3600
+UPDATING = HERE / "logs" / "updating.lock"  # идёт обновление yt-dlp
 
 
 def note(msg):
@@ -60,31 +62,54 @@ def running():
 
 
 def update_ytdlp():
-    """Раз в сутки, перед запуском качалки: сайты меняются, старый yt-dlp перестаёт качать."""
+    """Обновить yt-dlp (сайты меняются, старый перестаёт качать). Запускается отдельным процессом, когда программа
+    закрылась по простою: тогда файлы yt-dlp никто не читает. На время обновления ставится отметка UPDATING —
+    запуск программы её дожидается."""
     try:
         settings = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):  # настроек ещё нет или файл испорчен
         settings = {}
-    if time.time() - settings.get("ytdlp_checked", 0) < UPDATE_EVERY:
+    if time.time() - settings.get("ytdlp_checked", 0) < UPDATE_EVERY or running():
         return
-    SETTINGS_FILE.write_text(json.dumps({**settings, "ytdlp_checked": time.time()}, ensure_ascii=False), encoding="utf-8")
+    UPDATING.write_text(str(os.getpid()), encoding="utf-8")
     try:
         r = subprocess.run([sys.executable, "-m", "pip", "install", "-U", "-q", "yt-dlp[default]"],
-                           capture_output=True, text=True, timeout=90, creationflags=subprocess.CREATE_NO_WINDOW)
+                           capture_output=True, text=True, timeout=600, creationflags=subprocess.CREATE_NO_WINDOW)
         note(f"обновление yt-dlp: код {r.returncode} {r.stderr.strip()[-300:]}")
+        if r.returncode == 0:  # отметку о проверке ставим только после удачи: иначе повтора не было бы сутки
+            tmp = SETTINGS_FILE.with_name(SETTINGS_FILE.name + ".new")
+            tmp.write_text(json.dumps({**settings, "ytdlp_checked": time.time()}, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, SETTINGS_FILE)
     except (OSError, subprocess.SubprocessError) as e:
         note(f"обновление yt-dlp не удалось: {e!r}")
+    finally:
+        UPDATING.unlink(missing_ok=True)
+
+
+def wait_for_update():
+    """Если прямо сейчас обновляется yt-dlp — подождать: программа, стартовавшая посреди замены его файлов, не запустится."""
+    deadline = time.time() + 120
+    while UPDATING.exists() and time.time() < deadline:
+        if time.time() - UPDATING.stat().st_mtime > 900:  # отметка осталась от прерванного обновления
+            UPDATING.unlink(missing_ok=True)
+            break
+        time.sleep(0.5)
 
 
 def start_server():
+    wait_for_update()
     args = [str(HERE / ".venv" / "Scripts" / "pythonw.exe"), str(HERE / "server.py"), "--auto"]
-    # качалка должна пережить и этот скрипт, и закрытие Chrome
+    # программа должна пережить и этот скрипт, и закрытие Chrome
     flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_BREAKAWAY_FROM_JOB
-    kw = dict(cwd=HERE, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
-    try:
-        subprocess.Popen(args, creationflags=flags, **kw)
-    except OSError:  # Chrome не разрешил выйти из своей группы процессов — запускаем как есть
-        subprocess.Popen(args, creationflags=flags & ~subprocess.CREATE_BREAKAWAY_FROM_JOB, **kw)
+    (HERE / "logs").mkdir(exist_ok=True)
+    # Окна у программы нет, поэтому всё, что она напечатает при неудачном запуске (не тот Python, сломанная
+    # библиотека), пишем в файл: иначе причину было бы негде увидеть
+    with open(HERE / "logs" / "server-stderr.log", "ab") as errors:
+        kw = dict(cwd=HERE, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors, close_fds=True)
+        try:
+            subprocess.Popen(args, creationflags=flags, **kw)
+        except OSError:  # Chrome не разрешил выйти из своей группы процессов — запускаем как есть
+            subprocess.Popen(args, creationflags=flags & ~subprocess.CREATE_BREAKAWAY_FROM_JOB, **kw)
 
 
 def reply(data):
@@ -100,7 +125,6 @@ def main():
     try:
         started = not running()
         if started:
-            update_ytdlp()
             start_server()
             note("качалка запущена по просьбе расширения")
         reply({"ok": True, "started": started})
@@ -110,4 +134,9 @@ def main():
 
 
 if __name__ == "__main__":
-    install() if "--install" in sys.argv else main()
+    if "--install" in sys.argv:
+        install()
+    elif "--update" in sys.argv:
+        update_ytdlp()
+    else:
+        main()

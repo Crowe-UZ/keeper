@@ -1,4 +1,5 @@
 """Что стоит на компьютере: ffmpeg, JS-движок, версии — для запуска yt-dlp и для логов."""
+import functools
 import os
 import platform
 import shutil
@@ -26,6 +27,7 @@ FFMPEG_DIR = find_ffmpeg()
 JS_RUNTIMES = {name: {"path": None} for name in ("deno", "node") if shutil.which(name)}
 
 
+@functools.cache  # версии не меняются, пока программа работает; без этого ffmpeg и node запускались на каждую задачу
 def tool_version(cmd):
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=10, creationflags=NO_WINDOW).stdout
@@ -39,8 +41,8 @@ def environment():
     return {
         "python": sys.version.split()[0],
         "yt-dlp": YTDLP_VERSION,
-        "ffmpeg": tool_version([ffmpeg, "-version"]) if ffmpeg else "НЕ НАЙДЕН",
-        "js": {n: tool_version([n, "--version"]) for n in JS_RUNTIMES} or "НЕТ",
+        "ffmpeg": tool_version((ffmpeg, "-version")) if ffmpeg else "НЕ НАЙДЕН",
+        "js": {n: tool_version((n, "--version")) for n in JS_RUNTIMES} or "НЕТ",
         "os": platform.platform(),
         "save_dir": str(state.save_dir),
     }

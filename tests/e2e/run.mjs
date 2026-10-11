@@ -189,6 +189,15 @@ try {
   await sleep(2000);
   check("«Очистить» убирает завершённые", (await jobs()).length === 0, JSON.stringify(await jobs()));
 
+  // ---- F5 на странице урока: старые видео не должны остаться в списке рядом с новыми ----
+  await lesson.bringToFront();
+  await lesson.reload();
+  await sleep(9000);
+  await popup.bringToFront();
+  await sleep(3500);
+  check("после F5 в списке по-прежнему 2 видео, а не 4", (await popup.$$(".video")).length === 2, String((await popup.$$(".video")).length));
+  check("после F5 большая кнопка качает 2 видео", (await text("#go")) === "⬇ Скачать все (2)", await text("#go"));
+
   check("ошибок скриптов в окне нет", errors.length === 0, errors.join(" | "));
   await popup.screenshot({ path: "popup.png", fullPage: true });
 } finally {

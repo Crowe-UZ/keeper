@@ -1,4 +1,5 @@
 """Скачивание: настройки yt-dlp, выполнение задачи, обработчики очереди, отчёт о прогрессе."""
+import contextlib
 import json
 import os
 import re
@@ -106,6 +107,12 @@ def retry_pause(attempt):
 def build_opts(job_id, job, cookie_file, lg):
     tmp = temp_dir(job["save_dir"])
     private = job["sniffed"] or job_kind(job["url"]) != "page"
+
+    def pause(attempt):
+        # после «Отмены» потоки загрузки не должны спать перед повтором: пока они живы, недокачанный файл занят,
+        # его не удалить, и «Повторить» получил бы имя с «(2)»
+        return 0 if job.get("cancel") or stopping.is_set() else retry_pause(attempt)
+
     opts = {
         "outtmpl": unique_template(job["title"], job["save_dir"]) if job["sniffed"] else "%(title).150B [%(id)s].%(ext)s",
         # когда нужен только текст, звуковая дорожка в папку с видео не попадает вовсе — остаётся в .tmp
@@ -120,7 +127,7 @@ def build_opts(job_id, job, cookie_file, lg):
         "fragment_retries": 10,
         "concurrent_fragment_downloads": fragments_for(summary()["active"]),  # HLS качаем кусками параллельно
         "skip_unavailable_fragments": False,  # не скачался кусок — это ошибка, а не «готово» с дырой в видео
-        "retry_sleep_functions": {"fragment": retry_pause, "http": retry_pause},
+        "retry_sleep_functions": {"fragment": pause, "http": pause},
         "socket_timeout": 10,
         "http_headers": job["headers"],
         **pick_format(job["mode"], job["max_height"], bool(FFMPEG_DIR), private),
@@ -258,7 +265,7 @@ def finish_failed(job_id, job, error, lg):
         return log.info(f"[{job_id}] отменено")
     update(job_id, status="ошибка", error=friendly_error(msg), speed="")
     lg.error(f"ОШИБКА: {msg}")
-    log.error(f"[{job_id}] ОШИБКА: {msg[:500]} | лог: {jobs[job_id].get('log_file')}")
+    log.error(f"[{job_id}] ОШИБКА: {msg[:500]} | лог: {job.get('log_file')}")
     if not stopping.is_set():
         toast("Не получилось скачать", f"{job['title']}\n{friendly_error(msg)}")
 
@@ -266,6 +273,8 @@ def finish_failed(job_id, job, error, lg):
 def attempt(job_id, job, kind, cookie_file, names, lg):
     """Одна попытка скачать задачу — с заданными cookies или без них.
     Возвращает (что скачалось, параллельное распознавание текста или None)."""
+    if job.get("cancel"):  # «Отмена» пришла, пока задача готовилась: не затираем её статусом «подготовка»
+        raise yt_dlp.utils.DownloadCancelled("загрузка отменена")
     update(job_id, status="подготовка", error=None)
     ahead = None
     if text_ahead(job, kind):
@@ -310,9 +319,30 @@ def conclude(job_id, job, outcome, cookie_file, names, started, lg):
         finish_failed(job_id, job, e, lg)
     finally:
         if cookie_file:
-            os.unlink(cookie_file)
+            with contextlib.suppress(OSError):  # файл cookies уже убрали — остальная уборка всё равно нужна
+                os.unlink(cookie_file)
         remove_parts(job["save_dir"], names)
         close_job_logger(job_id)
+        release(job_id, job)  # в самом конце: до этого «Повторить» ждёт, а «Убрать готовые» задачу не трогает
+
+
+def claim(job_id):
+    """Взять задачу в работу. Возвращает её, только если она ждёт очереди и никем не взята: один и тот же номер
+    может лежать в очереди дважды (отмена, потом «Повторить»), а выполнять задачу должен один обработчик."""
+    with lock:
+        job = jobs.get(job_id)
+        if not job or job.get("running") or job["status"] != "в очереди" or stopping.is_set():
+            return None
+        job["running"] = True
+        return job
+
+
+def release(job_id, job):
+    """Отпустить задачу. Если за это время нажали «Повторить» — теперь её можно ставить в очередь."""
+    with lock:
+        job["running"] = False
+        if job.pop("retry_wanted", False):
+            tasks.put(job_id)
 
 
 def run_download(job_id):
@@ -325,7 +355,9 @@ def run_download(job_id):
     try:
         outcome = run_attempts(job_id, job, cookie_file, names, lg)
     except Exception as e:  # noqa: BLE001 — причину разберёт conclude: она станет статусом задачи и записью в лог
-        outcome = e
+        # Дальше несём только текст ошибки. Сама ошибка держит за собой всё, что было открыто в момент сбоя, —
+        # в том числе недокачанный файл: пока она жива, его не удалить, и «Повторить» получал имя с «(2)»
+        outcome = RuntimeError(str(e))
     finish = (job_id, job, outcome, cookie_file, names, started, lg)
     if "text" in job["want"] and not isinstance(outcome, BaseException):
         # распознавание идёт своим потоком: место в очереди загрузок освобождается для следующего видео
@@ -366,11 +398,14 @@ def report_once():
 def worker():
     while True:
         job_id = tasks.get()
+        job = claim(job_id)  # задачу могли отменить, убрать из списка или уже взять, пока она ждала очереди
         try:
-            job = jobs.get(job_id)  # задачу могли отменить или убрать из списка, пока она ждала очереди
-            if job and not job.get("cancel") and not stopping.is_set():
+            if job:
                 run_download(job_id)
         except Exception:  # noqa: BLE001 — верх обработчика очереди: один сбой не должен остановить остальные загрузки; он записан
             log.exception(f"[{job_id}] непредвиденный сбой обработчика")
+            # задача не должна навсегда остаться «в очереди»: тогда программа никогда не закроется по простою
+            update(job_id, status="ошибка", error="Внутренний сбой программы — подробности в журнале (кнопка «Логи»).", speed="")
+            release(job_id, job)
         finally:
             tasks.task_done()

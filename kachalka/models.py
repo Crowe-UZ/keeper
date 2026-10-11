@@ -1,23 +1,31 @@
 """Модели распознавания речи: какие бывают, где лежат, как скачиваются при первом использовании."""
 import contextlib
+import hashlib
 import shutil
 import tarfile
+import time
+import urllib.error
 import urllib.request
 
 from .config import ROOT, log
 
 MODELS_DIR = ROOT / "models"
 _BASE = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
+READY = ".ready"  # отметка внутри папки модели: распаковка дошла до конца. Без неё модель считается недокачанной
 
 # ru    — GigaAM v3 (Сбер, лицензия MIT): русская речь, сам ставит пунктуацию.
 # multi — Parakeet TDT 0.6B v3 (NVIDIA, лицензия CC-BY-4.0): английский и ещё 24 европейских языка.
+# sha256 — контрольные суммы архивов из данных релиза на GitHub (сверено 2026-10-11).
 MODELS = {
     "ru": {"title": "GigaAM v3 (русский)", "size_mb": 170,
-           "dir": "sherpa-onnx-nemo-transducer-punct-giga-am-v3-russian-2025-12-16"},
+           "dir": "sherpa-onnx-nemo-transducer-punct-giga-am-v3-russian-2025-12-16",
+           "sha256": "f9620a0099019c6afcee26525ef9ed3297fa50dd5691c1902af0c948fc1a470b"},
     "multi": {"title": "Parakeet v3 (английский и европейские)", "size_mb": 487,
-              "dir": "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"},
+              "dir": "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
+              "sha256": "5793d0fd397c5778d2cf2126994d58e9d56b1be7c04d13c7a15bb1b4eafb16bf"},
 }
 VAD_FILE = "silero_vad.onnx"  # находит в записи куски с речью — по ним режем длинное аудио
+TRIES = 3  # сколько раз продолжать загрузку после обрыва связи
 
 
 class Cancelled(Exception):
@@ -25,32 +33,64 @@ class Cancelled(Exception):
 
 
 def model_files(name):
-    """Пути к частям модели, если она уже скачана целиком; иначе None."""
+    """Пути к частям модели, если она скачана и распакована целиком; иначе None."""
     d = MODELS_DIR / MODELS[name]["dir"]
     parts = {k: next(iter(sorted(d.glob(f"{k}*.onnx"))), None) for k in ("encoder", "decoder", "joiner")}
     tokens = d / "tokens.txt"
-    if not all(parts.values()) or not tokens.exists():
+    if not (d / READY).exists() or not all(parts.values()) or not tokens.exists():
         return None
     return {**{k: str(v) for k, v in parts.items()}, "tokens": str(tokens)}
 
 
-def _fetch(url, dest, on_progress, should_stop):
-    """Скачать файл по частям — с прогрессом и возможностью прервать. Сначала в .part, чтобы обрыв не оставил «готовый» файл."""
-    part = dest.with_name(dest.name + ".part")
-    try:
-        with urllib.request.urlopen(url, timeout=60) as r, open(part, "wb") as f:  # адрес задан в коде, извне не приходит
-            total = int(r.headers.get("Content-Length") or 0)
-            done = 0
+def checksum_ok(path, expected):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest() == expected
+
+
+def resume_headers(have):
+    """Заголовок «продолжить с этого места», если часть файла уже скачана."""
+    return {"Range": f"bytes={have}-"} if have else {}
+
+
+def _fetch_once(url, part, on_progress, should_stop):
+    """Одна попытка: дописать в .part то, чего в нём ещё нет."""
+    have = part.stat().st_size if part.exists() else 0
+    req = urllib.request.Request(url, headers=resume_headers(have))  # адрес задан в коде, извне не приходит
+    with urllib.request.urlopen(req, timeout=60) as r:
+        if have and r.status != 206:  # сервер не умеет продолжать — начинаем файл заново
+            have = 0
+        total = have + int(r.headers.get("Content-Length") or 0)
+        with open(part, "ab" if have else "wb") as f:
             while chunk := r.read(1 << 20):
                 if should_stop():
                     raise Cancelled("загрузка модели прервана")
                 f.write(chunk)
-                done += len(chunk)
-                on_progress(round(done * 100 / total, 1) if total else 0)
-        part.replace(dest)
-    finally:
-        with contextlib.suppress(OSError):  # при успехе .part уже переименован — удалять нечего
-            part.unlink()
+                have += len(chunk)
+                on_progress(round(have * 100 / total, 1) if total else 0)
+
+
+def _fetch(url, dest, on_progress, should_stop):
+    """Скачать файл с прогрессом и возможностью прервать. Пишем в .part и после обрыва связи продолжаем
+    с того же места: модель в сотни мегабайт не должна начинаться с нуля."""
+    part = dest.with_name(dest.name + ".part")
+    for attempt in range(1, TRIES + 1):
+        try:
+            _fetch_once(url, part, on_progress, should_stop)
+            break
+        except urllib.error.HTTPError as e:
+            if e.code == 416:  # «дальше качать нечего» — файл уже целый
+                break
+            if attempt == TRIES:
+                raise
+        except OSError as e:  # обрыв связи, таймаут
+            if attempt == TRIES:
+                raise
+            log.warning(f"загрузка {dest.name} оборвалась ({e!r}) — продолжаю, попытка {attempt + 1} из {TRIES}")
+        time.sleep(2 * attempt)
+    part.replace(dest)
 
 
 def ensure_vad(on_progress=lambda p: None, should_stop=lambda: False):
@@ -61,8 +101,22 @@ def ensure_vad(on_progress=lambda p: None, should_stop=lambda: False):
     return str(path)
 
 
+def _unpack(archive, spec):
+    """Распаковать архив модели. Сначала во временную папку рядом, потом переименовать: прерванная распаковка
+    (выход из программы, выключение питания) не оставляет папку, похожую на готовую модель."""
+    target, partial = MODELS_DIR / spec["dir"], MODELS_DIR / (spec["dir"] + ".partial")
+    shutil.rmtree(partial, ignore_errors=True)
+    shutil.rmtree(target, ignore_errors=True)
+    with tarfile.open(archive, "r:bz2") as tar:
+        tar.extractall(partial, filter="data")  # filter="data": архив не может писать мимо своей папки
+    inner = partial / spec["dir"]  # в архиве модель лежит в папке со своим именем
+    (inner / READY).write_text("ok", encoding="utf-8")
+    inner.replace(target)
+    shutil.rmtree(partial, ignore_errors=True)
+
+
 def ensure_model(name, on_progress=lambda p: None, should_stop=lambda: False):
-    """Вернуть пути к файлам модели; при первом обращении — скачать и распаковать её."""
+    """Вернуть пути к файлам модели; при первом обращении — скачать, сверить и распаковать её."""
     files = model_files(name)
     if files:
         return files
@@ -70,15 +124,14 @@ def ensure_model(name, on_progress=lambda p: None, should_stop=lambda: False):
     MODELS_DIR.mkdir(exist_ok=True)
     archive = MODELS_DIR / (spec["dir"] + ".tar.bz2")
     log.info(f"скачиваю модель распознавания {spec['title']}, около {spec['size_mb']} МБ")
+    _fetch(_BASE + archive.name, archive, on_progress, should_stop)
     try:
-        _fetch(_BASE + archive.name, archive, on_progress, should_stop)
-        with tarfile.open(archive, "r:bz2") as tar:
-            tar.extractall(MODELS_DIR, filter="data")  # filter="data": архив не может писать мимо папки моделей
-    except BaseException:
-        shutil.rmtree(MODELS_DIR / spec["dir"], ignore_errors=True)  # недораспакованную модель нельзя оставлять «готовой»
-        raise
+        if not checksum_ok(archive, spec["sha256"]):
+            raise RuntimeError(f"Модель {spec['title']} скачалась с ошибкой (не сошлась контрольная сумма). Нажми «Повторить».")
+        on_progress(100)
+        _unpack(archive, spec)
     finally:
-        with contextlib.suppress(OSError):
+        with contextlib.suppress(OSError):  # архив больше не нужен: целый распакован, битый надо качать заново
             archive.unlink()
     files = model_files(name)
     if not files:
