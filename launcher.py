@@ -57,6 +57,16 @@ def write_next_steps(here):
         page.write_text(text.replace("{{EXTENSION_DIR}}", html.escape(str(here / "extension"))), encoding="utf-8")
 
 
+# Браузеры, в которых работает расширение. Все они на основе Chromium: расширение одно и то же, отличается
+# только место в реестре, где браузер ищет программу-помощника. Номер расширения везде один — он считается из ключа.
+BROWSERS = {"Chrome": r"Google\Chrome", "Edge": r"Microsoft\Edge", "Яндекс Браузер": r"Yandex\YandexBrowser"}
+
+
+def host_keys():
+    """Записи реестра (в разделе текущего пользователя), по которым браузеры находят программу."""
+    return [rf"Software\{vendor}\NativeMessagingHosts\{HOST_NAME}" for vendor in BROWSERS.values()]
+
+
 def install():
     import winreg
     write_next_steps(HERE)
@@ -68,8 +78,9 @@ def install():
         "type": "stdio",
         "allowed_origins": [f"chrome-extension://{extension_id()}/"],
     }, indent=2), encoding="utf-8")
-    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Google\Chrome\NativeMessagingHosts\{HOST_NAME}") as k:
-        winreg.SetValueEx(k, "", 0, winreg.REG_SZ, str(manifest))
+    for key in host_keys():
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key) as k:
+            winreg.SetValueEx(k, "", 0, winreg.REG_SZ, str(manifest))
     sys.stdout.write(f"OK: host registered for extension {extension_id()}\n")  # ответ для install.bat
 
 

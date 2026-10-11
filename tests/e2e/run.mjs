@@ -64,6 +64,7 @@ if (queue.jobs.length) {
 const browser = await puppeteer.launch({
   headless: true,
   pipe: true, enableExtensions: [EXT],
+  executablePath: process.env.BROWSER_EXE || undefined,  // Edge, Яндекс Браузер или настоящий Chrome
   args: ["--autoplay-policy=no-user-gesture-required", "--mute-audio"],
 });
 try {
@@ -238,8 +239,12 @@ try {
   }
 
   // ---- «Очистить» ----
-  await popup.click('#queue [data-act="/clear"]');
-  await sleep(2000);
+  // только что отменённую загрузку программа ещё несколько секунд убирает за собой и из списка не отдаёт —
+  // нажимаем, пока список не опустеет (но не дольше 12 секунд)
+  for (let i = 0; i < 6 && (await jobs()).length; i++) {
+    await popup.evaluate(() => document.querySelector('#queue [data-act="/clear"]')?.click());
+    await sleep(2000);
+  }
   check("«Очистить» убирает завершённые", (await jobs()).length === 0, JSON.stringify(await jobs()));
 
   // ---- F5 на странице урока: старые видео не должны остаться в списке рядом с новыми ----

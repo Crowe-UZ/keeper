@@ -40,6 +40,32 @@ class OwnPython(unittest.TestCase):
             self.assertEqual(launcher.runtime(Path(d), "pythonw.exe"), Path(d) / ".venv" / "Scripts" / "pythonw.exe")
 
 
+class Browsers(unittest.TestCase):
+    def test_program_is_registered_for_every_supported_browser(self):
+        # у каждого браузера своя запись в реестре, по которой он находит программу
+        keys = launcher.host_keys()
+        for part in (r"Google\Chrome", r"Microsoft\Edge", r"Yandex\YandexBrowser"):
+            self.assertTrue(any(part in k for k in keys), part)
+        self.assertTrue(all(k.endswith("NativeMessagingHosts\\" + launcher.HOST_NAME) for k in keys))
+
+    def test_registration_writes_every_key(self):
+        written = []
+
+        class FakeKey:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        fake = mock.Mock()
+        fake.CreateKey.side_effect = lambda root, key: written.append(key) or FakeKey()
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict("sys.modules", {"winreg": fake}),                 mock.patch.object(launcher, "HERE", Path(d)), mock.patch.object(launcher, "extension_id", return_value="x" * 32):
+            launcher.install()
+            self.assertTrue((Path(d) / "native_host.json").is_file())
+        self.assertEqual(written, launcher.host_keys())
+
+
 class LastStepPage(unittest.TestCase):
     def test_page_shows_the_folder_the_user_actually_chose(self):
         # папку установки выбирает человек, в том числе с пробелами и кириллицей — на странице должна стоять она

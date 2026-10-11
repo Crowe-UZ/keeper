@@ -73,8 +73,9 @@ if errorlevel 1 (
 
 echo.
 echo OK - everything is installed.
-echo Now open the Keeper window in Chrome (the extension icon). If the extension is not added yet:
-echo   chrome://extensions  -  turn on "Developer mode"  -  "Load unpacked"  -  choose the folder "extension".
+echo Now open the Keeper window in the browser (the extension icon). If the extension is not added yet:
+echo   chrome://extensions (Yandex: browser://extensions, Edge: edge://extensions)
+echo   turn on "Developer mode"  -  "Load unpacked"  -  choose the folder "extension".
 pause
 exit /b 0
 

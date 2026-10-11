@@ -38,7 +38,7 @@ Name: "ru"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [Messages]
 ru.WelcomeLabel1=Установка Keeper
-ru.WelcomeLabel2=Keeper скачивает видео с открытой вкладки Chrome, а ещё звук и текст того, что в видео говорят.%n%nБудет установлено (около 410 МБ):%n%n  •  программа Keeper и расширение для Chrome;%n  •  свои Python и ffmpeg — внутри папки программы, уже установленные не затрагиваются;%n  •  по желанию — распознавание речи для текста.%n%nВсё ставится в одну папку, права администратора не нужны.%n%nПоследний шаг — добавить расширение в Chrome — делается вручную: после установки откроется подсказка.
+ru.WelcomeLabel2=Keeper скачивает видео с открытой вкладки браузера (Chrome, Edge, Яндекс Браузер), а ещё звук и текст того, что в видео говорят.%n%nБудет установлено (около 410 МБ):%n%n  •  программа Keeper и расширение для браузера;%n  •  свои Python и ffmpeg — внутри папки программы, уже установленные не затрагиваются;%n  •  по желанию — распознавание речи для текста.%n%nВсё ставится в одну папку, права администратора не нужны.%n%nПоследний шаг — добавить расширение в браузер — делается вручную: после установки откроется подсказка.
 ru.SelectDirLabel3=Keeper будет установлен в эту папку. Сюда же позже скачаются модели распознавания речи (до 660 МБ). Видео сохраняются отдельно — в «Загрузки\Videos», это меняется в окне расширения.
 ru.SelectDirBrowseLabel=Нажми «Далее», чтобы оставить эту папку, или «Обзор», чтобы выбрать другую. Выбирай папку, куда можно записывать без прав администратора (не Program Files).
 
@@ -59,13 +59,15 @@ Source: "stage\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs igno
 Source: "art\keeper.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Registry]
-; по этой записи Chrome находит программу; само значение пишет launcher.py --install, здесь — чтобы запись
-; исчезла при удалении
+; по этим записям Chrome, Edge и Яндекс Браузер находят программу; само значение пишет launcher.py --install, здесь — чтобы записи
+; исчезли при удалении
 Root: HKCU; Subkey: "Software\Google\Chrome\NativeMessagingHosts\com.kachalka.host"; ValueType: string; ValueData: "{app}\native_host.json"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Microsoft\Edge\NativeMessagingHosts\com.kachalka.host"; ValueType: string; ValueData: "{app}\native_host.json"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Yandex\YandexBrowser\NativeMessagingHosts\com.kachalka.host"; ValueType: string; ValueData: "{app}\native_host.json"; Flags: uninsdeletekey
 
 [Run]
-Filename: "{app}\python\python.exe"; Parameters: """{app}\launcher.py"" --install"; WorkingDir: "{app}"; StatusMsg: "Подключаю программу к Chrome…"; Flags: runhidden
-Filename: "{app}\next-steps.html"; Description: "Показать, как добавить Keeper в Chrome (последний шаг)"; Flags: postinstall shellexec skipifsilent
+Filename: "{app}\python\python.exe"; Parameters: """{app}\launcher.py"" --install"; WorkingDir: "{app}"; StatusMsg: "Подключаю программу к браузерам…"; Flags: runhidden
+Filename: "{app}\next-steps.html"; Description: "Показать, как добавить Keeper в браузер (последний шаг)"; Flags: postinstall shellexec skipifsilent
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
