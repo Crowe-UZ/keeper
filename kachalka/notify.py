@@ -32,7 +32,7 @@ def toast(title, text, file=None):
                                capture_output=True, text=True, timeout=30, creationflags=NO_WINDOW)
             if r.returncode:
                 log.warning(f"уведомление Windows не показалось: {r.stderr.strip()[:300]}")
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
             log.warning(f"уведомление Windows не показалось: {e!r}")
 
     threading.Thread(target=show, daemon=True).start()

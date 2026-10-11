@@ -29,63 +29,69 @@ def friendly_error(msg):
     return msg[:300]
 
 
-def build_opts(job_id, job, cookie_file, lg):
+def progress_hook(job_id, job, lg):
+    """Обработчик прогресса yt-dlp: обновляет задачу и прерывает загрузку при отмене или закрытии качалки."""
     last_log = {"t": 0}
+
+    def downloading(d):
+        total = d.get("total_bytes") or d.get("total_bytes_estimate")
+        speed = re.sub(r"\x1b\[[0-9;]*m", "", d.get("_speed_str") or "").strip()  # без цветовых кодов терминала
+        fields = {"status": "скачивается", "speed": speed, "eta": d.get("eta"),
+                  "done_mb": round((d.get("downloaded_bytes") or 0) / 1048576)}
+        if total:
+            fields["percent"] = round(d["downloaded_bytes"] * 100 / total, 1)
+        elif d.get("fragment_count"):
+            fields["percent"] = round((d.get("fragment_index") or 0) * 100 / d["fragment_count"], 1)
+        update(job_id, **fields)
+        if time.time() - last_log["t"] > 10:  # прогресс в лог — раз в 10 секунд, не чаще
+            last_log["t"] = time.time()
+            lg.debug(f"прогресс {fields.get('percent', '?')}% скорость {fields['speed']}")
 
     def hook(d):
         if stopping.is_set() or job.get("cancel"):
             raise yt_dlp.utils.DownloadCancelled("загрузка отменена" if job.get("cancel") else "качалка закрывается")
         if d["status"] == "downloading":
-            total = d.get("total_bytes") or d.get("total_bytes_estimate")
-            speed = re.sub(r"\x1b\[[0-9;]*m", "", d.get("_speed_str") or "").strip()  # без цветовых кодов терминала
-            fields = {"status": "скачивается", "speed": speed, "eta": d.get("eta"),
-                      "done_mb": round((d.get("downloaded_bytes") or 0) / 1048576)}
-            if total:
-                fields["percent"] = round(d["downloaded_bytes"] * 100 / total, 1)
-            elif d.get("fragment_count"):
-                fields["percent"] = round((d.get("fragment_index") or 0) * 100 / d["fragment_count"], 1)
-            update(job_id, **fields)
-            if time.time() - last_log["t"] > 10:  # прогресс в лог — раз в 10 секунд, не чаще
-                last_log["t"] = time.time()
-                lg.debug(f"прогресс {fields.get('percent', '?')}% скорость {fields['speed']}")
+            downloading(d)
         elif d["status"] == "finished":
             lg.info(f"часть скачана: {d.get('filename')}")
             update(job_id, status="склейка", speed="")
 
+    return hook
+
+
+def pick_format(mode, max_height, has_ffmpeg):
+    """Какой формат просить у yt-dlp. max_height — ограничение качества из окна расширения (0 — максимум);
+    если такого разрешения у видео нет — берём лучшее, что есть."""
+    cap = f"[height<={max_height}]" if max_height else ""
+    if mode == "audio":
+        mp3 = {"postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "0"}]}
+        return {"format": "bestaudio/best", **(mp3 if has_ffmpeg else {})}
+    if not has_ffmpeg:
+        return {"format": f"b{cap}/b" if cap else "b"}  # без ffmpeg склеивать нечем — берём готовый файл со звуком
+    # максимальное разрешение/fps/битрейт: лучшее видео + лучший звук, склеить без пережатия
+    return {"format": f"bv*{cap}+ba/b{cap}/bv*+ba/b" if cap else "bv*+ba/b",
+            "merge_output_format": "mp4",
+            "postprocessors": [{"key": "FFmpegMetadata", "add_metadata": True}]}
+
+
+def build_opts(job_id, job, cookie_file, lg):
     opts = {
         "outtmpl": unique_template(job["title"], job["save_dir"]) if job["sniffed"] else "%(title).150B [%(id)s].%(ext)s",
         "paths": {"home": job["save_dir"], "temp": str(temp_dir(job["save_dir"]))},
         "logger": YtdlpLog(lg),
         "verbose": True,
         "noprogress": True,
-        "progress_hooks": [hook],
+        "progress_hooks": [progress_hook(job_id, job, lg)],
         "noplaylist": True,
         "windowsfilenames": True,
         "retries": 10,
         "fragment_retries": 10,
         "concurrent_fragment_downloads": 16,  # потоки HLS качаем кусками параллельно — быстрее
         "http_headers": job["headers"],
+        **pick_format(job["mode"], job["max_height"], bool(FFMPEG_DIR)),
     }
-    if JS_RUNTIMES:
-        opts["js_runtimes"] = JS_RUNTIMES
-    if cookie_file:
-        opts["cookiefile"] = cookie_file
-    if FFMPEG_DIR:
-        opts["ffmpeg_location"] = FFMPEG_DIR
-
-    # ограничение качества из окна расширения; если такого разрешения у видео нет — берём лучшее, что есть
-    cap = f"[height<={job['max_height']}]" if job["max_height"] else ""
-    if job["mode"] == "audio":
-        opts["format"] = "bestaudio/best"
-        if FFMPEG_DIR:
-            opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "0"}]
-    elif FFMPEG_DIR:
-        # максимальное разрешение/fps/битрейт: лучшее видео + лучший звук, склеить без пережатия
-        opts["format"] = f"bv*{cap}+ba/b{cap}/bv*+ba/b" if cap else "bv*+ba/b"
-        opts["merge_output_format"] = "mp4"
-        opts["postprocessors"] = [{"key": "FFmpegMetadata", "add_metadata": True}]
-    else:
-        opts["format"] = f"b{cap}/b" if cap else "b"  # без ffmpeg склеивать нечем — берём готовый файл со звуком
+    optional = {"js_runtimes": JS_RUNTIMES, "cookiefile": cookie_file, "ffmpeg_location": FFMPEG_DIR}
+    opts.update({k: v for k, v in optional.items() if v})
     return opts
 
 
@@ -94,10 +100,22 @@ def describe_format(f):
             f"v={f.get('vcodec')} a={f.get('acodec')} tbr={f.get('tbr')}")
 
 
-def run_download(job_id):
-    job = jobs[job_id]
-    lg = job_logger(job_id)
-    started = time.time()
+def job_kind(url):
+    """Что за ссылка: плеер GetCourse, страница урока GetCourse или любая другая страница/поток."""
+    if SIGN_PLAYER_RE.match(url):
+        return "player"
+    return "lesson" if GETCOURSE_LESSON_RE.search(url) else "page"
+
+
+def plan_attempts(job, kind, cookie_file):
+    """С какими cookies пробовать, по порядку. Для обычных сайтов сначала без cookies (YouTube не любит
+    чужие сессии), при отказе — с cookies вкладки. Закрытый контент — сразу с ними: без входа он не отдаётся."""
+    if job["sniffed"] or kind != "page":
+        return [cookie_file]
+    return [None, cookie_file] if cookie_file else [None]
+
+
+def log_start(job_id, job, lg):
     lg.info(f"=== задача {job_id} ===")
     lg.info(f"окружение: {json.dumps(environment(), ensure_ascii=False)}")
     lg.info(f"url: {job['url']}")
@@ -108,88 +126,117 @@ def run_download(job_id):
     if job["debug"]:
         lg.info(f"от расширения: {json.dumps(job['debug'], ensure_ascii=False)}")
 
+
+def extract_infos(ydl, job, kind, lg):
+    """Описания видео, которые надо скачать: обычно одно, на странице урока GetCourse — по одному на плеер."""
+    url = job["url"]
+    if kind == "player":
+        lg.info("GetCourse: ссылка на плеер")
+        return [getcourse_info(ydl, url, lg)]
+    if kind == "page":
+        return [ydl.extract_info(url, download=False)]
+    lg.info("GetCourse: страница урока, ищу плееры")
+    players = getcourse_players(ydl, url, {**job["headers"], "Referer": url}, lg)
+    if not players:
+        raise RuntimeError("На странице урока не нашлось плеера GetCourse. Включи видео (▶) — расширение поймает поток.")
+    return [getcourse_info(ydl, pu, lg) for pu in players]
+
+
+def download_infos(ydl, job_id, job, infos, named, names, lg):
+    """Скачать каждое видео. named — имя файла берём из заголовка вкладки (а не из названия на сайте);
+    назначенные имена копим в names, чтобы при неудаче убрать их недокачанные куски."""
+    results = []
+    for n, info in enumerate(infos, 1):
+        lg.info(f"видео {n}/{len(infos)}: extractor={info.get('extractor')} id={info.get('id')} title={info.get('title')!r}")
+        lg.info(f"доступно форматов: {len(info.get('formats') or [])}")
+        if named:
+            name = job["title"] if len(infos) == 1 else f"{job['title']} — часть {n}"
+            template = unique_template(name, job["save_dir"])
+            names.append(template.removesuffix(".%(ext)s").replace("%%", "%"))
+            ydl.params["outtmpl"]["default"] = template
+        else:
+            update(job_id, title=info.get("title") or job["title"])
+        result = ydl.process_ie_result(info, download=True)
+        for f in result.get("requested_formats") or [result]:
+            lg.info(f"выбран формат: {describe_format(f)}")
+        results.append(result)
+    return results
+
+
+def describe_result(result, lg):
+    """(путь, размер в МБ, что реально лежит в файле) для одного скачанного видео."""
+    path = ((result.get("requested_downloads") or [{}])[0].get("filepath")) or result.get("filepath")
+    exists = bool(path) and os.path.exists(path)
+    p = probe(path) if exists else None
+    if p:
+        lg.info(f"ffprobe итога: {json.dumps(p, ensure_ascii=False)}")
+    return path, os.path.getsize(path) / 1024 / 1024 if exists else 0, describe_probe(p)
+
+
+def finish_ok(job_id, job, results, started, lg):
+    done = [describe_result(r, lg) for r in results]
+    first = done[0][0] if done else None
+    parts = f" ({len(done)} видео)" if len(done) > 1 else ""
+    update(job_id, status="готово" + parts, percent=100, speed="", file=first, quality=done[0][2] if done else "")
+    for path, size, quality in done:
+        msg = f"[{job_id}] ГОТОВО за {time.time() - started:.0f} с: {path} ({size:.1f} МБ) {quality}"
+        lg.info(msg)
+        log.info(msg)
+    if first:
+        remember(job, first)
+        toast("Видео скачано", job["title"], first)
+
+
+def finish_failed(job_id, job, error, lg):
+    """Любой сбой задачи становится её статусом: «отменено», если отменял пользователь, иначе «ошибка»."""
+    msg = re.sub(r"\x1b\[[0-9;]*m", "", str(error)).replace("ERROR: ", "")
+    if job.get("cancel"):
+        update(job_id, status="отменено", error=None, speed="", percent=0)
+        lg.info("загрузка отменена пользователем")
+        return log.info(f"[{job_id}] отменено")
+    update(job_id, status="ошибка", error=friendly_error(msg), speed="")
+    lg.error(f"ОШИБКА: {msg}")
+    log.error(f"[{job_id}] ОШИБКА: {msg[:500]} | лог: {jobs[job_id].get('log_file')}")
+    if not stopping.is_set():
+        toast("Не получилось скачать", f"{job['title']}\n{friendly_error(msg)}")
+
+
+def attempt(job_id, job, kind, cookie_file, names, started, lg):
+    """Одна попытка скачать задачу целиком — с заданными cookies или без них."""
+    update(job_id, status="подготовка", error=None)
+    with yt_dlp.YoutubeDL(build_opts(job_id, job, cookie_file, lg)) as ydl:
+        infos = extract_infos(ydl, job, kind, lg)
+        named = job["sniffed"] or kind != "page"
+        results = download_infos(ydl, job_id, job, infos, named, names, lg)
+    finish_ok(job_id, job, results, started, lg)
+    names.clear()  # всё докачано — убирать нечего
+
+
+def run_attempts(job_id, job, cookie_file, names, started, lg):
+    kind = job_kind(job["url"])
+    attempts = plan_attempts(job, kind, cookie_file)
+    for i, cf in enumerate(attempts):
+        lg.info(f"попытка {i + 1}/{len(attempts)}: {'с cookies' if cf else 'без cookies'}")
+        try:
+            return attempt(job_id, job, kind, cf, names, started, lg)
+        except Exception as e:  # noqa: BLE001 — причина записана; последняя попытка, отмена и закрытие пробрасываются дальше
+            lg.warning(f"попытка {i + 1} не удалась: {e}\n{traceback.format_exc()}")
+            if i == len(attempts) - 1 or stopping.is_set() or job.get("cancel"):
+                raise
+            log.info(f"[{job_id}] без cookies не вышло, пробую с cookies")
+
+
+def run_download(job_id):
+    job = jobs[job_id]
+    lg = job_logger(job_id)
+    started = time.time()
+    log_start(job_id, job, lg)
     cookie_file = write_cookies(job["cookies"])
     names = []  # имена файлов, которые мы сами назначили: по ним при неудаче убираем недокачанные куски
     try:
-        # для обычных сайтов сначала пробуем без cookies (YouTube не любит чужие сессии),
-        # при отказе — повторяем с cookies вкладки. Пойманные потоки — сразу с cookies.
-        url = job["url"]
-        is_player = bool(SIGN_PLAYER_RE.match(url))
-        is_lesson = bool(GETCOURSE_LESSON_RE.search(url)) and not is_player
-        if job["sniffed"] or is_player or is_lesson:
-            attempts = [cookie_file]  # закрытый контент — только с входом
-        else:
-            attempts = [None, cookie_file] if cookie_file else [None]
-        for i, cf in enumerate(attempts):
-            try:
-                lg.info(f"попытка {i + 1}/{len(attempts)}: {'с cookies' if cf else 'без cookies'}")
-                update(job_id, status="подготовка", error=None)
-                with yt_dlp.YoutubeDL(build_opts(job_id, job, cf, lg)) as ydl:
-                    if is_player:
-                        lg.info("GetCourse: ссылка на плеер")
-                        infos = [getcourse_info(ydl, url, lg)]
-                    elif is_lesson:
-                        lg.info("GetCourse: страница урока, ищу плееры")
-                        headers = {**job["headers"], "Referer": url}
-                        players = getcourse_players(ydl, url, headers, lg)
-                        if not players:
-                            raise RuntimeError("На странице урока не нашлось плеера GetCourse. Включи видео (▶) — расширение поймает поток.")
-                        infos = [getcourse_info(ydl, pu, lg) for pu in players]
-                    else:
-                        infos = [ydl.extract_info(url, download=False)]
-                    named = job["sniffed"] or is_player or is_lesson  # имя файла = заголовок вкладки
-                    results = []
-                    for n, info in enumerate(infos, 1):
-                        lg.info(f"видео {n}/{len(infos)}: extractor={info.get('extractor')} id={info.get('id')} title={info.get('title')!r}")
-                        lg.info(f"доступно форматов: {len(info.get('formats') or [])}")
-                        if named:
-                            name = job["title"] if len(infos) == 1 else f"{job['title']} — часть {n}"
-                            template = unique_template(name, job["save_dir"])
-                            names.append(template.removesuffix(".%(ext)s").replace("%%", "%"))
-                            ydl.params["outtmpl"]["default"] = template
-                        else:
-                            update(job_id, title=info.get("title") or job["title"])
-                        result = ydl.process_ie_result(info, download=True)
-                        for f in result.get("requested_formats") or [result]:
-                            lg.info(f"выбран формат: {describe_format(f)}")
-                        results.append(result)
-                summary = []
-                for result in results:
-                    path = ((result.get("requested_downloads") or [{}])[0].get("filepath")) or result.get("filepath")
-                    p = probe(path) if path and os.path.exists(path) else None
-                    if p:
-                        lg.info(f"ffprobe итога: {json.dumps(p, ensure_ascii=False)}")
-                    size = os.path.getsize(path) / 1024 / 1024 if path and os.path.exists(path) else 0
-                    summary.append((path, size, describe_probe(p)))
-                real = summary[0][2] if summary else ""
-                parts = f" ({len(summary)} видео)" if len(summary) > 1 else ""
-                update(job_id, status="готово" + parts, percent=100, speed="", file=summary[0][0] if summary else None, quality=real)
-                for path, size, q in summary:
-                    msg = f"[{job_id}] ГОТОВО за {time.time() - started:.0f} с: {path} ({size:.1f} МБ) {q}"
-                    lg.info(msg)
-                    log.info(msg)
-                if summary and summary[0][0]:
-                    remember(job, summary[0][0])
-                    toast("Видео скачано", job["title"], summary[0][0])
-                names.clear()
-                return
-            except Exception as e:
-                lg.warning(f"попытка {i + 1} не удалась: {e}\n{traceback.format_exc()}")
-                if i == len(attempts) - 1 or stopping.is_set() or job.get("cancel"):
-                    raise
-                log.info(f"[{job_id}] без cookies не вышло, пробую с cookies")
-    except Exception as e:  # yt-dlp бросает разные исключения, показываем понятный текст
-        msg = re.sub(r"\x1b\[[0-9;]*m", "", str(e)).replace("ERROR: ", "")
-        if job.get("cancel"):
-            update(job_id, status="отменено", error=None, speed="", percent=0)
-            lg.info("загрузка отменена пользователем")
-            log.info(f"[{job_id}] отменено")
-        else:
-            update(job_id, status="ошибка", error=friendly_error(msg), speed="")
-            lg.error(f"ОШИБКА: {msg}")
-            log.error(f"[{job_id}] ОШИБКА: {msg[:500]} | лог: {jobs[job_id].get('log_file')}")
-            if not stopping.is_set():
-                toast("Не получилось скачать", f"{job['title']}\n{friendly_error(msg)}")
+        run_attempts(job_id, job, cookie_file, names, started, lg)
+    except Exception as e:  # noqa: BLE001 — yt-dlp и сайты бросают что угодно; любой сбой задачи становится её статусом и записью в лог
+        finish_failed(job_id, job, e, lg)
     finally:
         if cookie_file:
             os.unlink(cookie_file)
@@ -210,7 +257,7 @@ def reporter():
         time.sleep(15)
         try:
             report_once()
-        except Exception:
+        except Exception:  # noqa: BLE001 — верх фонового потока: отчёт не должен умирать от одного сбоя; он записан
             log.exception("сбой отчёта о прогрессе (загрузки не затронуты)")
 
 
@@ -234,7 +281,7 @@ def worker():
             job = jobs.get(job_id)  # задачу могли отменить или убрать из списка, пока она ждала очереди
             if job and not job.get("cancel") and not stopping.is_set():
                 run_download(job_id)
-        except Exception:
+        except Exception:  # noqa: BLE001 — верх обработчика очереди: один сбой не должен остановить остальные загрузки; он записан
             log.exception(f"[{job_id}] непредвиденный сбой обработчика")
         finally:
             tasks.task_done()

@@ -32,7 +32,7 @@ def run_tray():
             pystray.MenuItem("Выход", lambda: shutdown("выход из меню в трее")),
         )
         state.tray = pystray.Icon("kachalka", Image.open(ICON), "Качалка видео", menu)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — значок необязателен: нет библиотеки, нет иконки, нет рабочего стола — качаем и без него
         return log.warning(f"значок в трее недоступен ({e!r}) — работаю без него")
     threading.Thread(target=tray_status, daemon=True).start()
     state.tray.run()
@@ -86,7 +86,7 @@ def kill_children():
     try:
         subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, timeout=15,
                        creationflags=NO_WINDOW)
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError) as e:
         log.warning(f"не смог остановить ffmpeg: {e!r}")
 
 
@@ -108,8 +108,8 @@ def shutdown(reason):
     if state.tray:
         try:
             state.tray.stop()
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 — мы уже выходим: сбой снятия значка не должен помешать выходу
+            log.debug(f"значок не снялся: {e!r}")
     logging.shutdown()
     os._exit(0)
 

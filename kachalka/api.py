@@ -52,56 +52,74 @@ class Handler(BaseHTTPRequestHandler):
         if not self._allowed():
             return self._send(403, {"error": "forbidden"})
         path, _, query = self.path.partition("?")
-        if path == "/status":
-            with lock:
-                items = [{"id": k, "has_log": bool(v.get("log_file")), "has_file": bool(v.get("file")), **{f: v[f] for f in PUBLIC_FIELDS}} for k, v in jobs.items()]
-            return self._send(200, {"jobs": items[::-1][:30], "summary": summary(), "folder": str(state.save_dir), "ffmpeg": bool(FFMPEG_DIR),
-                                    "ytdlp": YTDLP_VERSION})
-        if path == "/open-folder":
-            open_path(state.save_dir)
-            return self._send(200, {"ok": True})
-        if path == "/choose-folder":
-            return self._choose_folder()
-        if path in ("/open-file", "/show-file"):
-            job = jobs.get(query.removeprefix("id="))
-            f = job and job.get("file")
-            if not f or not os.path.exists(f):
-                return self._send(404, {"error": "файл не найден — его переместили или удалили"})
-            if path == "/open-file":
-                open_path(f)  # откроется в плеере по умолчанию
-            else:
-                open_in_front(lambda: subprocess.Popen(["explorer", "/select,", f]))  # Проводник с выделенным файлом
-            return self._send(200, {"ok": True})
-        if path == "/open-logs":
-            open_path(LOG_DIR)
-            return self._send(200, {"ok": True})
-        if path == "/open-log":
-            job = jobs.get(query.removeprefix("id="))
-            if job and job.get("log_file"):
-                open_path(job["log_file"])
-                return self._send(200, {"ok": True})
+        handler = ROUTES.get(path)
+        if not handler:
+            return self._send(404, {"error": "not found"})
+        getattr(self, handler)(path, query.removeprefix("id="))
+
+    def _ok(self):
+        self._send(200, {"ok": True})
+
+    def _status(self, _path, _job_id):
+        with lock:
+            items = [{"id": k, "has_log": bool(v.get("log_file")), "has_file": bool(v.get("file")), **{f: v[f] for f in PUBLIC_FIELDS}} for k, v in jobs.items()]
+        self._send(200, {"jobs": items[::-1][:30], "summary": summary(), "folder": str(state.save_dir), "ffmpeg": bool(FFMPEG_DIR),
+                         "ytdlp": YTDLP_VERSION})
+
+    def _open_folder(self, _path, _job_id):
+        open_path(state.save_dir)
+        self._ok()
+
+    def _open_logs(self, _path, _job_id):
+        open_path(LOG_DIR)
+        self._ok()
+
+    def _open_file(self, path, job_id):
+        job = jobs.get(job_id)
+        f = job and job.get("file")
+        if not f or not os.path.exists(f):
+            return self._send(404, {"error": "файл не найден — его переместили или удалили"})
+        if path == "/open-file":
+            open_path(f)  # откроется в плеере по умолчанию
+        else:
+            open_in_front(lambda: subprocess.Popen(["explorer", "/select,", f]))  # Проводник с выделенным файлом
+        self._ok()
+
+    def _open_log(self, _path, job_id):
+        job = jobs.get(job_id)
+        if not job or not job.get("log_file"):
             return self._send(404, {"error": "лог не найден"})
-        if path == "/clear":
-            with lock:
-                for k in [k for k, v in jobs.items() if v["status"].startswith(FINAL)]:
-                    del jobs[k]
-            return self._send(200, {"ok": True})
-        if path in ("/cancel", "/retry"):
-            job_id = query.removeprefix("id=")
-            with lock:
-                job = jobs.get(job_id)
-                if not job:
-                    return self._send(404, {"error": "такой загрузки уже нет в списке"})
-                if path == "/cancel" and not job["status"].startswith(FINAL):
-                    job["cancel"] = True  # работающую загрузку прервёт её же обработчик прогресса
-                    job["status"] = "отменено" if job["status"] == "в очереди" else "отмена…"
-                    job["speed"] = ""
-                elif path == "/retry" and job["status"].startswith(("ошибка", "отменено")):
-                    job.update(cancel=False, status="в очереди", error=None, percent=0, speed="", eta=None, done_mb=0)
-                    tasks.put(job_id)
-            log.info(f"[{job_id}] {'отмена' if path == '/cancel' else 'повтор'} по просьбе пользователя")
-            return self._send(200, {"ok": True})
-        self._send(404, {"error": "not found"})
+        open_path(job["log_file"])
+        self._ok()
+
+    def _clear(self, _path, _job_id):
+        with lock:
+            for k in [k for k, v in jobs.items() if v["status"].startswith(FINAL)]:
+                del jobs[k]
+        self._ok()
+
+    def _cancel(self, _path, job_id):
+        with lock:
+            job = jobs.get(job_id)
+            if not job:
+                return self._send(404, {"error": "такой загрузки уже нет в списке"})
+            if not job["status"].startswith(FINAL):
+                job["cancel"] = True  # работающую загрузку прервёт её же обработчик прогресса
+                job["status"] = "отменено" if job["status"] == "в очереди" else "отмена…"
+                job["speed"] = ""
+        log.info(f"[{job_id}] отмена по просьбе пользователя")
+        self._ok()
+
+    def _retry(self, _path, job_id):
+        with lock:
+            job = jobs.get(job_id)
+            if not job:
+                return self._send(404, {"error": "такой загрузки уже нет в списке"})
+            if job["status"].startswith(("ошибка", "отменено")):
+                job.update(cancel=False, status="в очереди", error=None, percent=0, speed="", eta=None, done_mb=0)
+                tasks.put(job_id)
+        log.info(f"[{job_id}] повтор по просьбе пользователя")
+        self._ok()
 
     def do_POST(self):
         if not self._allowed():
@@ -149,7 +167,7 @@ class Handler(BaseHTTPRequestHandler):
         tasks.put(job_id)
         self._send(200, {"id": job_id})
 
-    def _choose_folder(self):
+    def _choose_folder(self, _path=None, _job_id=None):
         """Стандартное окно Windows «Выбор папки» — прямо на этом ПК, поверх Chrome."""
         import tkinter
         from tkinter import filedialog
@@ -187,3 +205,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         pass  # стандартный шумный лог каждого HTTP-запроса не нужен
+
+
+# Адреса, которые зовёт окно расширения -> метод Handler, который отвечает
+ROUTES = {
+    "/status": "_status",
+    "/open-folder": "_open_folder",
+    "/choose-folder": "_choose_folder",
+    "/open-file": "_open_file",
+    "/show-file": "_open_file",
+    "/open-logs": "_open_logs",
+    "/open-log": "_open_log",
+    "/clear": "_clear",
+    "/cancel": "_cancel",
+    "/retry": "_retry",
+}

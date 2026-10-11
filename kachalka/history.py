@@ -18,7 +18,7 @@ def job_key(job):
 def load_history():
     try:
         return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, ValueError):  # истории ещё нет или файл испорчен
         return []
 
 

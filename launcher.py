@@ -50,7 +50,7 @@ def install():
     }, indent=2), encoding="utf-8")
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Google\Chrome\NativeMessagingHosts\{HOST_NAME}") as k:
         winreg.SetValueEx(k, "", 0, winreg.REG_SZ, str(manifest))
-    print(f"OK: host registered for extension {extension_id()}")
+    sys.stdout.write(f"OK: host registered for extension {extension_id()}\n")  # ответ для install.bat
 
 
 def running():
@@ -63,7 +63,7 @@ def update_ytdlp():
     """Раз в сутки, перед запуском качалки: сайты меняются, старый yt-dlp перестаёт качать."""
     try:
         settings = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, ValueError):  # настроек ещё нет или файл испорчен
         settings = {}
     if time.time() - settings.get("ytdlp_checked", 0) < UPDATE_EVERY:
         return
@@ -72,7 +72,7 @@ def update_ytdlp():
         r = subprocess.run([sys.executable, "-m", "pip", "install", "-U", "-q", "yt-dlp[default]"],
                            capture_output=True, text=True, timeout=90, creationflags=subprocess.CREATE_NO_WINDOW)
         note(f"обновление yt-dlp: код {r.returncode} {r.stderr.strip()[-300:]}")
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError) as e:
         note(f"обновление yt-dlp не удалось: {e!r}")
 
 
@@ -104,7 +104,7 @@ def main():
             start_server()
             note("качалка запущена по просьбе расширения")
         reply({"ok": True, "started": started})
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — Chrome ждёт ответа в любом случае: о сбое сообщаем ему и пишем в лог
         note(f"сбой запуска: {e!r}")
         reply({"ok": False, "error": repr(e)})
 

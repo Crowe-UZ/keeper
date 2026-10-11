@@ -30,7 +30,7 @@ def tool_version(cmd):
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=10, creationflags=NO_WINDOW).stdout
         return out.splitlines()[0].strip() if out else "?"
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError) as e:
         return f"не найден ({e.__class__.__name__})"
 
 

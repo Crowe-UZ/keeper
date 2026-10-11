@@ -68,7 +68,8 @@ def open_in_front(opener, title=None):
     быть открыто и раньше (Проводник тогда нового окна не создаёт, а показывает старое)."""
     try:
         before = _titled_windows()
-    except Exception:
+    except (AttributeError, OSError) as e:  # не Windows — откроем как получится, без вывода вперёд
+        log.debug(f"список окон недоступен: {e!r}")
         before = None
     opener()
     if before is None:
@@ -91,8 +92,8 @@ def open_in_front(opener, title=None):
     def safely():
         try:
             raise_it()
-        except Exception as e:
-            log.warning(f"не смог вывести окно вперёд: {e!r}")
+        except Exception as e:  # noqa: BLE001 — верх фонового потока: окно уже открыто, сбой вывода вперёд не должен ничего ронять
+            log.warning(f"не смог вывести окно вперёд: {e!r}", exc_info=True)
 
     threading.Thread(target=safely, daemon=True).start()
 

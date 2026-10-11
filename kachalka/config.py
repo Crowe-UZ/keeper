@@ -18,7 +18,7 @@ DEFAULT_SAVE_DIR = Path.home() / "Downloads" / "Videos"
 def load_settings():
     try:
         return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, ValueError):  # файла ещё нет или он испорчен — работаем с умолчаниями
         return {}
 
 
@@ -27,13 +27,10 @@ def save_settings(**fields):
 
 
 def load_save_dir():
-    try:
-        d = Path(load_settings()["save_dir"])
-        if d.is_dir():
-            return d
-    except Exception:
-        pass
-    return DEFAULT_SAVE_DIR
+    saved = load_settings().get("save_dir")
+    if isinstance(saved, str) and Path(saved).is_dir():
+        return Path(saved)
+    return DEFAULT_SAVE_DIR  # папку не выбирали, или её с тех пор удалили
 
 
 WORKERS = 3  # сколько видео качается одновременно, остальные ждут в очереди

@@ -1,4 +1,5 @@
 """Файлы загрузок: имена, временная папка, cookies для yt-dlp, проверка готового файла."""
+import contextlib
 import json
 import re
 import shutil
@@ -15,11 +16,9 @@ def temp_dir(save_dir):
     """Куски недокачанных видео — в скрытой подпапке .tmp, чтобы не путать с готовыми."""
     t = Path(save_dir) / ".tmp"
     t.mkdir(parents=True, exist_ok=True)
-    try:
+    with contextlib.suppress(AttributeError, OSError):  # не Windows или нет прав — папка просто останется видимой
         import ctypes
         ctypes.windll.kernel32.SetFileAttributesW(str(t), 0x2)  # FILE_ATTRIBUTE_HIDDEN
-    except Exception:
-        pass
     return t
 
 
@@ -76,10 +75,8 @@ def remove_parts(save_dir, names):
             return
         gc.collect()  # брошенный yt-dlp открытый файл закрывается, когда его объект собран
         for part in left:
-            try:
+            with contextlib.suppress(OSError):  # ещё занят — попробуем на следующем круге
                 part.unlink()
-            except OSError:
-                pass
         time.sleep(0.3)
 
 
@@ -99,7 +96,7 @@ def probe(path):
              "-of", "json", path],
             capture_output=True, text=True, timeout=30, encoding="utf-8", creationflags=NO_WINDOW)
         return json.loads(out.stdout)
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError, ValueError) as e:  # нет ffprobe, завис или вернул не JSON
         return {"error": repr(e)}
 
 
