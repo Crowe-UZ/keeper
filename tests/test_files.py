@@ -70,7 +70,7 @@ class Routes(unittest.TestCase):
     def test_every_address_the_extension_calls_is_served(self):
         called = {"/status", "/open-folder", "/choose-folder", "/open-file", "/show-file", "/open-logs", "/open-log",
                   "/clear", "/cancel", "/retry"}
-        self.assertEqual(called - set(api.ROUTES), set())
+        self.assertEqual(called - set(api.ROUTES) - set(api.ACTIONS), set())  # читать — ROUTES, менять — ACTIONS
 
 
 if __name__ == "__main__":

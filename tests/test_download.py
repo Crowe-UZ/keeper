@@ -122,8 +122,9 @@ class Texts(unittest.TestCase):
         self.assertIn("ffmpeg", download.friendly_error("ffmpeg exited with code 1"))
 
     def test_our_own_message_about_missing_ffmpeg_is_not_replaced(self):
+        from kachalka.errors import UserError
         ours = "Для распознавания нужен ffmpeg — он достаёт звук из файла."
-        self.assertEqual(download.friendly_error(ours), ours)
+        self.assertEqual(download.explain(UserError(ours)), ours)
 
     def test_unknown_error_is_passed_through_but_cut(self):
         self.assertEqual(download.friendly_error("x" * 500), "x" * 300)

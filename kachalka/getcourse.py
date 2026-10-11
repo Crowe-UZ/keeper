@@ -1,5 +1,6 @@
 """GetCourse: поиск плеера на странице урока и разбор плеера экстрактором yt-dlp."""
 import re
+from .errors import UserError
 
 
 
@@ -22,7 +23,7 @@ def getcourse_players(ydl, page_url, headers, lg):
     text, final_url = fetch_text(ydl, page_url, headers)
     lg.info(f"GetCourse: страница урока загружена, итоговый адрес {final_url}, {len(text)} символов")
     if "/cms/system/login" in final_url:
-        raise RuntimeError("GetCourse просит войти заново. Обнови урок (F5) и попробуй снова.")
+        raise UserError("GetCourse просит войти заново. Обнови урок (F5) и попробуй снова.")
     found = list(dict.fromkeys(html.unescape(u) for u in SIGN_PLAYER_RE.findall(text)))
     lg.info(f"GetCourse: найдено плееров: {len(found)} {[u.split('?')[0] for u in found]}")
     if not found:

@@ -9,7 +9,8 @@ import traceback
 from pathlib import Path
 
 import yt_dlp
-from .config import (ACTIVE, log)
+from .config import ACTIVE, log
+from .errors import UserError
 from .state import jobs, lock, stopping, summary, tasks, update
 from .files import describe_probe, probe, remove_parts, safe_name, temp_dir, unique_template, write_cookies
 from .getcourse import GETCOURSE_LESSON_RE, SIGN_PLAYER_RE, getcourse_info, getcourse_players
@@ -21,17 +22,34 @@ from .system import FFMPEG_DIR, JS_RUNTIMES, environment
 from .textahead import TEXT_FORMAT, TextAhead
 
 
+# Слова должны стоять отдельно, а не внутри пути или имени файла: «/login-video/x» и «Урок 403.mp4» — не отказ сайта
+LOGIN_RE = re.compile(r"http error 40[13]\b|(?<![/\\\w.-])(?:sign in|log ?in|private|forbidden|unauthorized|cookies|"
+                      r"members[- ]only)(?![/\\\w.-])", re.I)
+
+
+def wants_login(msg):
+    """Похоже ли сообщение yt-dlp на отказ сайта без входа. Только тогда есть смысл пробовать ещё раз с cookies вкладки."""
+    return bool(LOGIN_RE.search(msg))
+
+
 def friendly_error(msg):
-    low = msg.lower()
-    if "drm" in low:
+    """Сообщение yt-dlp -> понятная причина. Ищем целые слова и коды ответа, а не буквы где попало:
+    «403» в названии файла — не отказ сайта."""
+    if re.search(r"\bdrm\b", msg, re.I):
         return "Видео защищено от копирования — скачать его нельзя."
-    if "unsupported url" in low:
+    if re.search(r"unsupported url", msg, re.I):
         return "Не нашёл видео на странице. Включи его (▶), подожди пару секунд и нажми «Повторить»."
-    if any(w in low for w in ("sign in", "login", "log in", "private", "403", "401", "forbidden", "cookies")):
+    if wants_login(msg):
         return "Сайт не отдал видео. Проверь, что ты вошёл на сайт, обнови страницу (F5), включи видео и скачай снова."
-    if "ffmpeg" in low and "нужен ffmpeg" not in low:  # своё понятное сообщение про отсутствие ffmpeg не затираем
+    if re.search(r"\bffmpeg\b", msg, re.I):
         return "Не получилось обработать файл. Проверь, что установлен ffmpeg (шаг 2 инструкции), и нажми «Повторить»."
     return msg[:300]
+
+
+def explain(error):
+    """Текст ошибки для человека: свои сообщения — как есть, чужие (yt-dlp, сайт) — через переводчик."""
+    msg = re.sub(r"\x1b\[[0-9;]*m", "", str(error)).replace("ERROR: ", "")
+    return msg[:300] if isinstance(error, UserError) else friendly_error(msg)
 
 
 def progress_hook(job_id, job, lg):
@@ -193,14 +211,15 @@ def extract_infos(ydl, job, kind, lg):
     lg.info("GetCourse: страница урока, ищу плееры")
     players = getcourse_players(ydl, url, {**job["headers"], "Referer": url}, lg)
     if not players:
-        raise RuntimeError("Не нашёл видео на странице урока. Включи его (▶), подожди пару секунд и скачай снова.")
+        raise UserError("Не нашёл видео на странице урока. Включи его (▶), подожди пару секунд и скачай снова.")
     return [getcourse_info(ydl, pu, lg) for pu in players]
 
 
 def name_download(ydl, job_id, job, info, n, total, named, names):
     """Назначить имя файлу очередного видео. Возвращает имя для текста, если качаем только звук под распознавание.
     Назначенные имена копим в names: по ним убираются недокачанные куски и временная звуковая дорожка."""
-    name = job["title"] if total == 1 else f"{job['title']} — часть {n}"
+    part = "" if total == 1 else f" — часть {n}"
+    name = safe_name(job["title"], keep=part)
     if job["mode"] == "text":  # сам звук временный и лежит в .tmp под номером задачи; имя нужно только тексту
         names.append(f"{job_id}-{n}")
         ydl.params["outtmpl"]["default"] = f"{job_id}-{n}.%(ext)s"
@@ -235,7 +254,7 @@ def finish_result(job_id, job, result, stem, lg, ahead=None):
     """Довести одно скачанное видео до того, что просили. Возвращает (файлы {вид: путь}, описание для окна)."""
     path = ((result.get("requested_downloads") or [{}])[0].get("filepath")) or result.get("filepath")
     if not path or not os.path.exists(path):
-        raise RuntimeError("Файл скачался, но пропал — возможно, его удалил антивирус. Нажми «Повторить».")
+        raise UserError("Файл скачался, но пропал — возможно, его удалил антивирус. Нажми «Повторить».")
     files, note = make_outputs(job_id, job, Path(path), stem, lg, ahead)
     about = []
     if job["mode"] != "text":  # временную звуковую дорожку описывать незачем — её уже не будет
@@ -270,16 +289,16 @@ def finish_ok(job_id, job, results, ahead, started, lg):
 
 def finish_failed(job_id, job, error, lg):
     """Любой сбой задачи становится её статусом: «отменено», если отменял пользователь, иначе «ошибка»."""
-    msg = re.sub(r"\x1b\[[0-9;]*m", "", str(error)).replace("ERROR: ", "")
+    msg, shown = re.sub(r"\x1b\[[0-9;]*m", "", str(error)).replace("ERROR: ", ""), explain(error)
     if job.get("cancel"):
         update(job_id, status="отменено", error=None, speed="", percent=0)
         lg.info("загрузка отменена пользователем")
         return log.info(f"[{job_id}] отменено")
-    update(job_id, status="ошибка", error=friendly_error(msg), speed="")
+    update(job_id, status="ошибка", error=shown, speed="")
     lg.error(f"ОШИБКА: {msg}")
     log.error(f"[{job_id}] ОШИБКА: {msg[:500]} | лог: {job.get('log_file')}")
     if not stopping.is_set():
-        toast("Не получилось скачать", f"{job['title']}\n{friendly_error(msg)}")
+        toast("Не получилось скачать", f"{job['title']}\n{shown}")
 
 
 def attempt(job_id, job, kind, cookie_file, names, lg):
@@ -314,7 +333,9 @@ def run_attempts(job_id, job, cookie_file, names, lg):
             return attempt(job_id, job, kind, cf, names, lg)
         except Exception as e:  # noqa: BLE001 — причина записана; последняя попытка, отмена и закрытие пробрасываются дальше
             lg.warning(f"попытка {i + 1} не удалась: {e}\n{traceback.format_exc()}")
-            if i == len(attempts) - 1 or stopping.is_set() or job.get("cancel"):
+            # вторая попытка — только если сайт отказал без входа: нехватку места, сбой склейки или защиту
+            # от копирования cookies не вылечат, а всё скачанное пришлось бы качать заново
+            if i == len(attempts) - 1 or stopping.is_set() or job.get("cancel") or not wants_login(str(e)):
                 raise
             log.info(f"[{job_id}] без cookies не вышло, пробую с cookies")
 
@@ -369,7 +390,7 @@ def run_download(job_id):
     except Exception as e:  # noqa: BLE001 — причину разберёт conclude: она станет статусом задачи и записью в лог
         # Дальше несём только текст ошибки. Сама ошибка держит за собой всё, что было открыто в момент сбоя, —
         # в том числе недокачанный файл: пока она жива, его не удалить, и «Повторить» получал имя с «(2)»
-        outcome = RuntimeError(str(e))
+        outcome = (UserError if isinstance(e, UserError) else RuntimeError)(str(e))
     finish = (job_id, job, outcome, cookie_file, names, started, lg)
     if "text" in job["want"] and not isinstance(outcome, BaseException):
         # распознавание идёт своим потоком: место в очереди загрузок освобождается для следующего видео

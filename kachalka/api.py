@@ -10,13 +10,37 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 from yt_dlp.version import __version__ as YTDLP_VERSION
-from .config import (FINAL, HEIGHTS, LOG_DIR, log, save_settings)
+from .config import FINAL, HEIGHTS, LOG_DIR, PORT, extension_id, log, save_settings
 from . import state
 from .state import jobs, lock, stopping, summary, tasks
 from .history import already_downloaded, job_key
 from .outputs import clean_formats, clean_want, download_mode, want_label
 from .system import FFMPEG_DIR
 from .windows import open_in_front, open_path
+
+
+EXTENSION_ID = extension_id()
+OUR_ORIGIN = "chrome-extension://" + EXTENSION_ID
+LOCAL_HOSTS = (f"127.0.0.1:{PORT}", f"localhost:{PORT}")
+
+
+def refusal(method, headers):
+    """Почему запрос нельзя выполнять; None — можно. Обращаться к программе вправе только наше расширение.
+    - Host должен быть настоящим локальным адресом: так отсекается подмена адреса (DNS rebinding), когда чужая
+      страница заставляет браузер считать 127.0.0.1 «своим» сайтом.
+    - Origin, если он есть, — только нашего расширения: ни сайт, ни другое расширение не проходят.
+    - Заголовок X-Kachalka: обычная страница не может послать его без предварительного запроса (OPTIONS),
+      а такой запрос от чужого Origin мы отклоняем.
+    Запрос без Origin с верным Host и заголовком — это само расширение (в GET браузер Origin не шлёт)
+    или программа на этом же компьютере, от которой заголовки всё равно не защита."""
+    if headers.get("Host") not in LOCAL_HOSTS:
+        return f"чужой адрес Host={headers.get('Host')!r}"
+    origin = headers.get("Origin", "")
+    if origin and origin != OUR_ORIGIN:
+        return f"чужой отправитель Origin={origin!r}"
+    if method != "OPTIONS" and headers.get("X-Kachalka") != "1":
+        return "нет заголовка расширения"
+    return None
 
 
 MAX_BODY = 5 * 1024 * 1024  # запрос на скачивание — это ссылка и cookies вкладки; больше 5 МБ — не наш запрос
@@ -61,16 +85,9 @@ PUBLIC_FIELDS = ("url", "title", "status", "percent", "speed", "eta", "done_mb",
 
 class Handler(BaseHTTPRequestHandler):
     def _allowed(self):
-        # Сайты не должны иметь возможность дёргать качалку — только расширение.
-        # Chrome шлёт Origin расширения не во всех запросах (в GET его нет), поэтому расширение
-        # всегда добавляет заголовок X-Kachalka. Сайт такой заголовок без preflight не пошлёт,
-        # а preflight (OPTIONS) от чужого Origin мы отклоняем.
-        origin = self.headers.get("Origin", "")
-        if origin and not origin.startswith("chrome-extension://"):
-            log.warning(f"отклонён запрос {self.command} {self.path} от чужого сайта Origin={origin!r}")
-            return False
-        if self.command != "OPTIONS" and self.headers.get("X-Kachalka") != "1":
-            log.warning(f"отклонён запрос {self.command} {self.path}: нет заголовка расширения (Origin={origin!r})")
+        why = refusal(self.command, self.headers)
+        if why:
+            log.warning(f"отклонён запрос {self.command} {self.path}: {why}")
             return False
         state.last_activity = time.time()
         return True
@@ -79,8 +96,9 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", self.headers.get("Origin", ""))
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Kachalka")
+        if self.headers.get("Origin") == OUR_ORIGIN:  # разрешение на чтение ответа — только своему расширению
+            self.send_header("Access-Control-Allow-Origin", OUR_ORIGIN)
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Kachalka")
         self.end_headers()
         self.wfile.write(body)
 
@@ -183,9 +201,12 @@ class Handler(BaseHTTPRequestHandler):
     def _post(self):
         if not self._allowed():
             return self._send(403, {"error": "forbidden"})
-        if self.path == "/client-log":
+        path, _, query = self.path.partition("?")
+        if path == "/client-log":
             return self._client_log()
-        if self.path != "/download":
+        if path in ACTIONS:  # кнопки окна: всё, что что-то меняет или открывает, — только POST
+            return getattr(self, ACTIONS[path])(path, query.removeprefix("id="))
+        if path != "/download":
             return self._send(404, {"error": "not found"})
         if stopping.is_set():  # иначе задача принималась бы и молча пропадала вместе с программой
             return self._send(503, {"error": "Программа закрывается — попробуй ещё раз через пару секунд."})
@@ -260,9 +281,11 @@ class Handler(BaseHTTPRequestHandler):
         pass  # стандартный шумный лог каждого HTTP-запроса не нужен
 
 
-# Адреса, которые зовёт окно расширения -> метод Handler, который отвечает
-ROUTES = {
-    "/status": "_status",
+# Адреса, которые зовёт окно расширения -> метод Handler, который отвечает.
+# ROUTES — только чтение (GET). ACTIONS — всё, что что-то меняет или открывает (POST): у POST-запроса браузер
+# всегда указывает, кто его послал, поэтому чужую страницу и чужое расширение можно отличить и отклонить.
+ROUTES = {"/status": "_status"}
+ACTIONS = {
     "/open-folder": "_open_folder",
     "/choose-folder": "_choose_folder",
     "/open-file": "_open_file",

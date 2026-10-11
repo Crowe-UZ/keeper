@@ -1,5 +1,6 @@
 """Модели распознавания речи: какие бывают, где лежат, как скачиваются при первом использовании."""
 import contextlib
+from .errors import UserError
 import hashlib
 import shutil
 import tarfile
@@ -104,7 +105,7 @@ def ensure_vad(on_progress=lambda p: None, should_stop=lambda: False):
         _fetch(VAD_URL, path, on_progress, should_stop)
         if not checksum_ok(path, VAD_SHA256):
             path.unlink()
-            raise RuntimeError("Детектор речи скачался с ошибкой (не сошлась контрольная сумма). Нажми «Повторить».")
+            raise UserError("Детектор речи скачался с ошибкой (не сошлась контрольная сумма). Нажми «Повторить».")
     return str(path)
 
 
@@ -134,7 +135,7 @@ def ensure_model(name, on_progress=lambda p: None, should_stop=lambda: False):
     _fetch(_BASE + archive.name, archive, on_progress, should_stop)
     try:
         if not checksum_ok(archive, spec["sha256"]):
-            raise RuntimeError(f"Модель {spec['title']} скачалась с ошибкой (не сошлась контрольная сумма). Нажми «Повторить».")
+            raise UserError(f"Модель {spec['title']} скачалась с ошибкой (не сошлась контрольная сумма). Нажми «Повторить».")
         on_progress(100)
         _unpack(archive, spec)
     finally:
@@ -142,6 +143,6 @@ def ensure_model(name, on_progress=lambda p: None, should_stop=lambda: False):
             archive.unlink()
     files = model_files(name)
     if not files:
-        raise RuntimeError(f"Модель {spec['title']} скачалась, но в архиве не оказалось нужных файлов.")
+        raise UserError(f"Модель {spec['title']} скачалась, но в архиве не оказалось нужных файлов.")
     log.info(f"модель {spec['title']} готова: {MODELS_DIR / spec['dir']}")
     return files

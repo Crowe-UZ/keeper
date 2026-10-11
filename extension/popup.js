@@ -241,12 +241,16 @@ async function refresh() {
     + jobs.map(jobHtml).join(""));
 }
 
+// Всё, что что-то меняет или открывает, шлём методом POST: у такого запроса браузер указывает отправителя,
+// и программа отклоняет чужие страницы и чужие расширения
+const POST = { method: "POST" };
+
 // кнопки внутри очереди перерисовываются — ловим нажатия на самом списке
 $("queue").onclick = (e) => {
   const b = e.target.closest("[data-act]");
   if (!b) return;
   run(async () => {
-    const r = await api(b.dataset.act + (b.dataset.id ? "?id=" + b.dataset.id : ""));
+    const r = await api(b.dataset.act + (b.dataset.id ? "?id=" + b.dataset.id : ""), POST);
     if (!r.ok) throw new Error((await r.json()).error);
   });
 };
@@ -307,11 +311,11 @@ $("gear").onclick = () => {
 
 $("quality").value = String(await getQuality());
 $("quality").onchange = () => chrome.storage.local.set({ quality: +$("quality").value });
-$("logs").onclick = () => run(() => apiUp("/open-logs"));
-$("folder").onclick = () => run(() => apiUp("/open-folder"));
+$("logs").onclick = () => run(() => apiUp("/open-logs", POST));
+$("folder").onclick = () => run(() => apiUp("/open-folder", POST));
 $("chooseFolder").onclick = () => run(async () => {
   $("chooseFolder").textContent = "Выбери в окне Windows…";
-  try { await apiUp("/choose-folder"); } finally { $("chooseFolder").textContent = "Сменить"; }
+  try { await apiUp("/choose-folder", POST); } finally { $("chooseFolder").textContent = "Сменить"; }
 });
 
 const scan = () => chrome.runtime.sendMessage({ type: "scan", tabId: tab.id }).catch(() => {});

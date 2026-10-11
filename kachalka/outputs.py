@@ -4,6 +4,7 @@
 Если нужен только текст — качается одна звуковая дорожка во временную папку, после распознавания она удаляется.
 """
 import subprocess
+from .errors import UserError
 from pathlib import Path
 
 from .config import NO_WINDOW
@@ -68,7 +69,7 @@ def extract_audio(media, dest, form="m4a"):
         r = subprocess.run([*ffmpeg, *codec, str(dest)], capture_output=True, text=True, timeout=3600, creationflags=NO_WINDOW)
         if not r.returncode and dest.exists() and dest.stat().st_size:
             return
-    raise RuntimeError("Не получилось вынуть звук из видео (нужен ffmpeg): " + r.stderr.strip()[-300:])
+    raise UserError("Не получилось вынуть звук из видео (нужен ffmpeg): " + r.stderr.strip()[-300:])
 
 
 def recognise(job_id, job, media, ahead, lg):

@@ -5,6 +5,7 @@
 Русскую речь распознаёт GigaAM v3, английскую и другие европейские — Parakeet v3 (см. models.py).
 """
 import os
+from .errors import UserError
 import re
 import subprocess
 import tempfile
@@ -207,7 +208,7 @@ def read_audio(media, limit=None):
             ff.wait(timeout=30)
             if ff.returncode:
                 errors.seek(0)
-                raise RuntimeError("Не получилось прочитать звук из файла: " + errors.read().decode("utf-8", "replace")[-300:])
+                raise UserError("Не получилось прочитать звук из файла: " + errors.read().decode("utf-8", "replace")[-300:])
         finally:
             if ff.poll() is None:  # нас прервали посреди файла — ffmpeg дальше не нужен
                 ff.kill()
@@ -319,9 +320,9 @@ def transcribe(media, language="auto", on_stage=lambda stage, percent: None, sho
     try:
         import sherpa_onnx  # noqa: F401 — проверяем, что движок распознавания установлен, до долгой работы
     except ImportError as e:
-        raise RuntimeError("Распознавание речи не установлено. Запусти install.bat в папке программы.") from e
+        raise UserError("Распознавание речи не установлено. Запусти install.bat в папке программы.") from e
     if not FFMPEG_DIR:
-        raise RuntimeError("Для распознавания нужен ffmpeg — он достаёт звук из файла.")
+        raise UserError("Для распознавания нужен ffmpeg — он достаёт звук из файла.")
 
     def loading(percent):
         on_stage("загрузка модели", percent)

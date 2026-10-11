@@ -15,6 +15,7 @@ ignore_names = [
     "window_size",  # ещё одно поле настроек детектора речи sherpa-onnx
     "Settings", "DownloadFormat", "TextForms", "Partial",
     "allow_reuse_address",  # поле сервера: его читает стандартная библиотека при занятии порта
+    "Gate", "Errors", "Cookies", "WindowsNames",
     # настройки детектора речи: это поля чужого объекта sherpa-onnx, мы их только задаём
     "min_silence_duration", "max_speech_duration",
 ]

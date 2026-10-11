@@ -40,9 +40,18 @@ def process_alive(pid):
         return True
 
 
-def safe_name(name):
+RESERVED = re.compile(r"^(con|prn|aux|nul|com\d|lpt\d)$", re.I)  # имена устройств Windows: файл с таким именем молча теряется
+
+
+def safe_name(name, keep=""):
+    """Имя файла, которое Windows примет. keep — хвост (« — видео 2», « — часть 3»), который должен уцелеть,
+    даже если название длинное: иначе у нескольких видео с одной страницы имена совпадали."""
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip(" .")
-    return name[:150] or "video"
+    keep = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", keep)
+    name = (name[:150 - len(keep)].rstrip(" .") + keep) if keep else name[:150]
+    if RESERVED.match(name):
+        name += "_"
+    return name or "video"
 
 
 def glob_escape(s):

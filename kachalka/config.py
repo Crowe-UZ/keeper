@@ -15,6 +15,19 @@ SETTINGS_FILE = ROOT / "settings.json"
 DEFAULT_SAVE_DIR = Path.home() / "Downloads" / "Videos"
 
 
+def extension_id():
+    """Номер нашего расширения — Chrome вычисляет его из ключа в manifest.json, считаем так же.
+    По нему программа отличает своё расширение от любого другого."""
+    import base64
+    import hashlib
+    try:
+        key = json.loads((ROOT / "extension" / "manifest.json").read_text(encoding="utf-8"))["key"]
+    except (OSError, ValueError, KeyError):
+        return ""
+    digest = hashlib.sha256(base64.b64decode(key)).hexdigest()[:32]
+    return digest.translate(str.maketrans("0123456789abcdef", "abcdefghijklmnop"))
+
+
 def write_atomic(path, text):
     """Записать файл целиком или не записать вовсе: обрыв посреди записи не должен оставить полфайла
     (битые настройки молча откатывали выбранную папку, битая история — память о скачанном)."""
