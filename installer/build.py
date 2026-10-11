@@ -1,4 +1,4 @@
-"""Собрать установщик Keeper-Setup-<версия>.exe: один файл, внутри свой Python, библиотеки, ffmpeg и расширение.
+"""Собрать установщик VideoTranskeeper-Setup-<версия>.exe: один файл, внутри свой Python, библиотеки, ffmpeg и расширение.
 
 Запуск из папки проекта:  .venv\\Scripts\\python.exe installer\\build.py
 Нужен Inno Setup 6 (winget install JRSoftware.InnoSetup) и интернет при первом запуске: Python и ffmpeg
@@ -124,8 +124,8 @@ def make_art():
     from PIL import ImageDraw, ImageFont
     side = canvas((410, 797), (24, 24, 37), 128, 250)
     try:
-        font = ImageFont.truetype(str(Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "segoeuib.ttf"), 52)
-        ImageDraw.Draw(side).text((205, 440), "Keeper", font=font, fill=(255, 255, 255), anchor="mm")
+        font = ImageFont.truetype(str(Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "segoeuib.ttf"), 38)
+        ImageDraw.Draw(side).text((205, 440), "VideoTranskeeper", font=font, fill=(255, 255, 255), anchor="mm")
     except OSError:  # нет такого шрифта — полоса останется без подписи, значка достаточно
         pass
     side.save(art / "side.bmp")
@@ -163,7 +163,7 @@ def main():
     make_art()
     say("упаковываю (несколько минут)…")
     run([iscc, "/Q", f"/DAppVersion={version}", HERE / "keeper.iss"])
-    result = OUT / f"Keeper-Setup-{version}.exe"
+    result = OUT / f"VideoTranskeeper-Setup-{version}.exe"
     say(f"Готово: {result} ({result.stat().st_size / 1048576:.0f} МБ), sha256 {sha256(result)}")
 
 

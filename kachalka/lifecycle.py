@@ -34,7 +34,7 @@ def run_tray():
             pystray.MenuItem("Логи", lambda: open_path(LOG_DIR)),
             pystray.MenuItem("Выход", lambda: shutdown("выход из меню в трее")),
         )
-        state.tray = pystray.Icon("kachalka", Image.open(ICON), "Keeper", menu)
+        state.tray = pystray.Icon("kachalka", Image.open(ICON), "VideoTranskeeper", menu)
     except Exception as e:  # noqa: BLE001 — значок необязателен: нет библиотеки, нет иконки, нет рабочего стола — качаем и без него
         return log.warning(f"значок в трее недоступен ({e!r}) — работаю без него")
     threading.Thread(target=tray_status, daemon=True).start()
@@ -48,7 +48,7 @@ def tray_status():
         line = status_line()
         if line != shown:
             shown = line
-            state.tray.title = "Keeper — " + line.lower()
+            state.tray.title = "VideoTranskeeper — " + line.lower()
             state.tray.update_menu()
 
 

@@ -70,7 +70,7 @@ class LastStepPage(unittest.TestCase):
     def test_page_shows_the_folder_the_user_actually_chose(self):
         # папку установки выбирает человек, в том числе с пробелами и кириллицей — на странице должна стоять она
         with tempfile.TemporaryDirectory() as d:
-            here = Path(d) / "Мои программы" / "Keeper"
+            here = Path(d) / "Мои программы" / "VideoTranskeeper"
             here.mkdir(parents=True)
             (here / "next-steps.html").write_text("<code>{{EXTENSION_DIR}}</code>", encoding="utf-8")
             launcher.write_next_steps(here)

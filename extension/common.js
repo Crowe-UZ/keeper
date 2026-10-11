@@ -17,7 +17,7 @@ export function startServer() {
     try {
       r = await chrome.runtime.sendNativeMessage(NATIVE_HOST, { cmd: "start" });
     } catch (e) {
-      throw new Error(`Программа-помощник не установлена. Открой папку, куда распаковал Keeper, дважды щёлкни install.bat и открой это окно снова. (${e.message})`);
+      throw new Error(`Программа-помощник не установлена. Открой папку, куда распаковал VideoTranskeeper, дважды щёлкни install.bat и открой это окно снова. (${e.message})`);
     }
     if (!r?.ok) throw new Error("Не удалось запуститься: " + (r?.error || "запусти install.bat ещё раз; подробности — в файле logs\\launcher.log"));
     for (let i = 0; i < 60; i++) {

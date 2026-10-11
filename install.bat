@@ -2,7 +2,7 @@
 rem Only ASCII in this file: cmd misreads Cyrillic in .bat files.
 rem Run once: after that the Chrome extension starts the helper program by itself.
 rem Every step is checked: on failure the script stops and says what is wrong instead of printing "Done".
-title Keeper - install
+title VideoTranskeeper - install
 cd /d "%~dp0"
 setlocal
 
@@ -73,7 +73,7 @@ if errorlevel 1 (
 
 echo.
 echo OK - everything is installed.
-echo Now open the Keeper window in the browser (the extension icon). If the extension is not added yet:
+echo Now open the VideoTranskeeper window in the browser (the extension icon). If the extension is not added yet:
 echo   chrome://extensions (Yandex: browser://extensions, Edge: edge://extensions)
 echo   turn on "Developer mode"  -  "Load unpacked"  -  choose the folder "extension".
 pause

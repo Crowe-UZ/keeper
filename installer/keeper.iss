@@ -1,4 +1,4 @@
-﻿; Установщик Keeper. Собирается скриптом installer\build.py: он готовит папку stage и запускает этот сценарий.
+﻿; Установщик VideoTranskeeper. Собирается скриптом installer\build.py: он готовит папку stage и запускает этот сценарий.
 ; Ставится в профиль пользователя, прав администратора не просит.
 
 #ifndef AppVersion
@@ -7,10 +7,10 @@
 
 [Setup]
 AppId={{6C1B5E0A-52C1-4C0B-9D6E-5B0F3A7C2E41}
-AppName=Keeper
+AppName=VideoTranskeeper
 AppVersion={#AppVersion}
-AppPublisher=Keeper
-DefaultDirName={localappdata}\Keeper
+AppPublisher=VideoTranskeeper
+DefaultDirName={localappdata}\VideoTranskeeper
 ; первая страница объясняет, что будет установлено; папку человек выбирает сам (при обновлении — прежняя)
 DisableWelcomePage=no
 DisableDirPage=no
@@ -25,11 +25,11 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=out
-OutputBaseFilename=Keeper-Setup-{#AppVersion}
+OutputBaseFilename=VideoTranskeeper-Setup-{#AppVersion}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
-UninstallDisplayName=Keeper
+UninstallDisplayName=VideoTranskeeper
 ; сами закрываем программу перед заменой файлов (см. StopKeeper) — стандартный поиск занятых файлов не нужен
 CloseApplications=no
 
@@ -37,9 +37,9 @@ CloseApplications=no
 Name: "ru"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [Messages]
-ru.WelcomeLabel1=Установка Keeper
-ru.WelcomeLabel2=Keeper скачивает видео с открытой вкладки браузера (Chrome, Edge, Яндекс Браузер), а ещё звук и текст того, что в видео говорят.%n%nБудет установлено (около 410 МБ):%n%n  •  программа Keeper и расширение для браузера;%n  •  свои Python и ffmpeg — внутри папки программы, уже установленные не затрагиваются;%n  •  по желанию — распознавание речи для текста.%n%nВсё ставится в одну папку, права администратора не нужны.%n%nПоследний шаг — добавить расширение в браузер — делается вручную: после установки откроется подсказка.
-ru.SelectDirLabel3=Keeper будет установлен в эту папку. Сюда же позже скачаются модели распознавания речи (до 660 МБ). Видео сохраняются отдельно — в «Загрузки\Videos», это меняется в окне расширения.
+ru.WelcomeLabel1=Установка VideoTranskeeper
+ru.WelcomeLabel2=VideoTranskeeper скачивает видео с открытой вкладки браузера (Chrome, Edge, Яндекс Браузер), а ещё звук и текст того, что в видео говорят.%n%nБудет установлено (около 410 МБ):%n%n  •  программа VideoTranskeeper и расширение для браузера;%n  •  свои Python и ffmpeg — внутри папки программы, уже установленные не затрагиваются;%n  •  по желанию — распознавание речи для текста.%n%nВсё ставится в одну папку, права администратора не нужны.%n%nПоследний шаг — добавить расширение в браузер — делается вручную: после установки откроется подсказка.
+ru.SelectDirLabel3=VideoTranskeeper будет установлен в эту папку. Сюда же позже скачаются модели распознавания речи (до 660 МБ). Видео сохраняются отдельно — в «Загрузки\Videos», это меняется в окне расширения.
 ru.SelectDirBrowseLabel=Нажми «Далее», чтобы оставить эту папку, или «Обзор», чтобы выбрать другую. Выбирай папку, куда можно записывать без прав администратора (не Program Files).
 
 [Tasks]
@@ -67,7 +67,7 @@ Root: HKCU; Subkey: "Software\Yandex\YandexBrowser\NativeMessagingHosts\com.kach
 
 [Run]
 Filename: "{app}\python\python.exe"; Parameters: """{app}\launcher.py"" --install"; WorkingDir: "{app}"; StatusMsg: "Подключаю программу к браузерам…"; Flags: runhidden
-Filename: "{app}\next-steps.html"; Description: "Показать, как добавить Keeper в браузер (последний шаг)"; Flags: postinstall shellexec skipifsilent
+Filename: "{app}\next-steps.html"; Description: "Показать, как добавить VideoTranskeeper в браузер (последний шаг)"; Flags: postinstall shellexec skipifsilent
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"

@@ -74,7 +74,7 @@
 
 <!-- Заполни под свой проект. Команда, которую нельзя скопировать и выполнить, — не команда. -->
 
-- сборка установщика: `.venv\Scripts\python.exe installer\build.py` → `installer/out/Keeper-Setup-<версия>.exe` (нужен Inno Setup 6; версия — из `extension/manifest.json`)
+- сборка установщика: `.venv\Scripts\python.exe installer\build.py` → `installer/out/VideoTranskeeper-Setup-<версия>.exe` (нужен Inno Setup 6; версия — из `extension/manifest.json`)
 - тесты: `bash tests/run.sh` (Python и, если есть Node, логика потоков расширения — `tests/extension`)
 - сквозной тест расширения (нужны запущенная качалка и Node): `cd tests/e2e && npm install && npm test`
 - то же в Edge или Яндекс Браузере: перед командой задать `BROWSER_EXE` — путь к `msedge.exe` или `browser.exe`; запуск программы самим браузером проверяет `node start.mjs` (программа при этом должна быть закрыта)

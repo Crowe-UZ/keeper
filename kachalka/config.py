@@ -83,7 +83,7 @@ def load_save_dir():
     Раньше сохранённая папка на отключённом диске не давала программе запуститься вовсе."""
     saved = load_settings().get("save_dir")
     chosen = [Path(saved)] if isinstance(saved, str) and Path(saved).is_dir() else []
-    return first_usable([*chosen, DEFAULT_SAVE_DIR, Path.home() / "Keeper"])
+    return first_usable([*chosen, DEFAULT_SAVE_DIR, Path.home() / "VideoTranskeeper"])
 
 
 WORKERS = 3  # сколько видео качается одновременно, остальные ждут в очереди

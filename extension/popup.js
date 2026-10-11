@@ -11,7 +11,7 @@ const $ = (id) => document.getElementById(id);
 // Файлы расширения на диске обновились, а Chrome держит старые — перезагружаемся сами, без кнопки ⟳
 const onDisk = await fetch(chrome.runtime.getURL("manifest.json"), { cache: "no-store" }).then((r) => r.json()).catch(() => null);
 if (onDisk && onDisk.version !== chrome.runtime.getManifest().version) {
-  document.body.textContent = "Keeper обновился — открой это окно ещё раз.";
+  document.body.textContent = "VideoTranskeeper обновился — открой это окно ещё раз.";
   setTimeout(() => chrome.runtime.reload(), 1200);
   await new Promise(() => {});  // дальше старый код не выполняем
 }

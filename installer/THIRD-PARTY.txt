@@ -1,4 +1,4 @@
-Keeper includes third-party software. Each component stays under its own licence.
+VideoTranskeeper includes third-party software. Each component stays under its own licence.
 
 Python 3.12 (python\)
   Python Software Foundation License. Build: python-build-standalone, https://github.com/astral-sh/python-build-standalone
