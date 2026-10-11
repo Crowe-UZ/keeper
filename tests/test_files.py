@@ -30,12 +30,13 @@ class Probe(unittest.TestCase):
 
 class SameVideo(unittest.TestCase):
     def test_page_link_is_identified_by_url_and_mode(self):
-        job = {"sniffed": False, "mode": "video", "url": "https://youtu.be/x", "page_url": "p", "title": "t"}
+        job = {"sniffed": False, "want": ["video"], "url": "https://youtu.be/x", "page_url": "p", "title": "t"}
         self.assertEqual(history.job_key(job), "video|https://youtu.be/x")
-        self.assertNotEqual(history.job_key(job), history.job_key({**job, "mode": "audio"}))
+        self.assertNotEqual(history.job_key(job), history.job_key({**job, "want": ["audio"]}))
+        self.assertNotEqual(history.job_key(job), history.job_key({**job, "want": ["video", "text"]}))
 
     def test_caught_stream_ignores_its_ever_changing_link(self):
-        job = {"sniffed": True, "mode": "video", "url": "https://cdn/master?token=1", "page_url": "https://s/lesson", "title": "Урок — видео 2"}
+        job = {"sniffed": True, "want": ["video"], "url": "https://cdn/master?token=1", "page_url": "https://s/lesson", "title": "Урок — видео 2"}
         self.assertEqual(history.job_key(job), history.job_key({**job, "url": "https://cdn/master?token=2"}))
         self.assertNotEqual(history.job_key(job), history.job_key({**job, "title": "Урок — видео 1"}))
 

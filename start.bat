@@ -8,6 +8,6 @@ if not exist .venv\Scripts\python.exe (
   py -3.12 -m venv .venv
 )
 echo Updating yt-dlp...
-.venv\Scripts\python.exe -m pip install -U -q "yt-dlp[default]" pystray pillow
+.venv\Scripts\python.exe -m pip install -U -q "yt-dlp[default]" pystray pillow sherpa-onnx
 .venv\Scripts\python.exe server.py
 pause

@@ -8,7 +8,7 @@ if not exist .venv\Scripts\python.exe (
   py -3.12 -m venv .venv
 )
 echo Installing libraries...
-.venv\Scripts\python.exe -m pip install -U -q "yt-dlp[default]" pystray pillow
+.venv\Scripts\python.exe -m pip install -U -q "yt-dlp[default]" pystray pillow sherpa-onnx
 .venv\Scripts\python.exe launcher.py --install
 echo.
 echo Done. Now open chrome://extensions and press the reload button on the extension card.

@@ -1,0 +1,86 @@
+"""Что получить из одной загрузки: видео, звук, текст — в любом сочетании, по одному файлу на каждое.
+
+Скачивание всегда одно: звук вынимается из уже скачанного видео, текст распознаётся с того же файла.
+Если нужен только текст — качается одна звуковая дорожка во временную папку, после распознавания она удаляется.
+"""
+import subprocess
+from pathlib import Path
+
+from .config import NO_WINDOW
+from .state import stopping, update
+from .system import FFMPEG_DIR
+from .transcribe import transcribe
+
+ORDER = ("video", "audio", "text")
+LABELS = {"video": "видео", "audio": "звук", "text": "текст"}
+EXT = {"audio": ".mp3", "text": ".txt"}
+
+
+def clean_want(want):
+    """Что просили — в постоянном порядке, без повторов и неизвестного; ничего не просили — значит видео."""
+    asked = [w for w in ORDER if w in (want or [])]
+    return asked or ["video"]
+
+
+def download_mode(want):
+    """Что качать, чтобы получить всё нужное одной загрузкой."""
+    return next(w for w in ORDER if w in want)
+
+
+def want_label(want):
+    return " + ".join(LABELS[w] for w in ORDER if w in want)
+
+
+def free_path(folder, stem, ext):
+    """Свободное имя файла с таким расширением: «Урок.txt», а если занято — «Урок (2).txt».
+    Файлы с другим расширением не мешают: текст и должен лежать рядом со своим видео."""
+    path, n = Path(folder) / f"{stem}{ext}", 1
+    while path.exists():
+        n += 1
+        path = Path(folder) / f"{stem} ({n}){ext}"
+    return path
+
+
+def extract_mp3(media, dest):
+    """Звук из скачанного видео — отдельным mp3."""
+    r = subprocess.run([str(Path(FFMPEG_DIR) / "ffmpeg"), "-v", "error", "-y", "-i", str(media), "-vn",
+                        "-c:a", "libmp3lame", "-q:a", "0", str(dest)],
+                       capture_output=True, text=True, timeout=3600, creationflags=NO_WINDOW)
+    if r.returncode or not dest.exists():
+        raise RuntimeError("ffmpeg не смог вынуть звук из видео: " + r.stderr.strip()[-300:])
+
+
+def make_text(job_id, job, media, stem, lg):
+    """Распознать речь и сохранить текст рядом с остальными файлами. Возвращает (путь или None, пояснение)."""
+    def stage(name, percent):
+        if not job.get("cancel"):  # после «Отмены» статус уже «отмена…» — не затираем его
+            update(job_id, status=name, percent=percent, speed="", eta=None)
+
+    text, model = transcribe(media, job["language"], stage, lambda: job.get("cancel") or stopping.is_set())
+    if not text.strip():
+        lg.info(f"распознавание ({model}): речь не найдена")
+        return None, "речь не найдена"
+    path = free_path(job["save_dir"], stem, EXT["text"])
+    path.write_text(text, encoding="utf-8")
+    words = len(text.split())
+    lg.info(f"текст сохранён: {path} ({words} слов, модель {model})")
+    return path, f"текст: {words} слов"
+
+
+def make_outputs(job_id, job, media, stem, lg):
+    """Из скачанного файла сделать всё, что просили. media — что скачалось; stem — имя для текста,
+    когда скачивалась только временная звуковая дорожка. Возвращает ({вид: путь}, пояснение про текст)."""
+    want, mode = job["want"], download_mode(job["want"])
+    files, note = {}, ""
+    if mode != "text":
+        files[mode] = media
+    if mode == "video" and "audio" in want:
+        update(job_id, status="звук из видео", percent=0, speed="")
+        files["audio"] = free_path(job["save_dir"], media.stem, EXT["audio"])
+        extract_mp3(media, files["audio"])
+        lg.info(f"звук из видео: {files['audio']}")
+    if "text" in want:
+        path, note = make_text(job_id, job, media, stem or media.stem, lg)
+        if path:
+            files["text"] = path
+    return files, note

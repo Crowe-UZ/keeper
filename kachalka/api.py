@@ -13,11 +13,12 @@ from .config import (FINAL, HEIGHTS, LOG_DIR, log, save_settings)
 from . import state
 from .state import jobs, lock, summary, tasks
 from .history import already_downloaded, job_key
+from .outputs import clean_want, download_mode, want_label
 from .system import FFMPEG_DIR
 from .windows import open_in_front, open_path
 
 
-PUBLIC_FIELDS = ("url", "title", "status", "percent", "speed", "eta", "done_mb", "quality", "error", "mode")
+PUBLIC_FIELDS = ("url", "title", "status", "percent", "speed", "eta", "done_mb", "quality", "error", "mode", "want")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -137,8 +138,9 @@ class Handler(BaseHTTPRequestHandler):
         if not url.startswith(("http://", "https://")):
             log.warning(f"отклонена ссылка не http(s): {url[:200]!r}")
             return self._send(400, {"error": "нужна ссылка http(s)"})
+        want = clean_want(data.get("want") or [data.get("mode")])  # mode — как просило расширение до версии 3.4
         new = {"url": url, "title": data.get("title") or url, "page_url": data.get("page_url") or "",
-               "mode": data.get("mode", "video"), "sniffed": bool(data.get("sniffed"))}
+               "want": want, "mode": download_mode(want), "sniffed": bool(data.get("sniffed"))}
         key = job_key(new)
         if not data.get("force"):  # «Скачать ещё раз» в окне расширения шлёт force
             with lock:
@@ -155,6 +157,7 @@ class Handler(BaseHTTPRequestHandler):
                 "key": key,
                 "max_height": data.get("max_height") if data.get("max_height") in HEIGHTS else 0,
                 "cancel": False,
+                "language": data.get("language") if data.get("language") in ("ru", "multi") else "auto",
                 "headers": {k: v for k, v in (data.get("headers") or {}).items() if k in ("Referer", "Origin", "User-Agent")},
                 "cookies": data.get("cookies") or [],
                 "debug": data.get("debug") or {},
@@ -162,7 +165,7 @@ class Handler(BaseHTTPRequestHandler):
                 "status": "в очереди", "percent": 0, "speed": "", "eta": None, "done_mb": 0, "quality": "", "file": None, "error": None,
                 "log_file": None,
             }
-        log.info(f"[{job_id}] новая задача ({data.get('mode', 'video')}{', поток' if data.get('sniffed') else ''}): "
+        log.info(f"[{job_id}] новая задача ({want_label(want)}{', поток' if data.get('sniffed') else ''}): "
                  f"{data.get('title')!r} <- {url[:200]}")
         tasks.put(job_id)
         self._send(200, {"id": job_id})

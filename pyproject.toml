@@ -9,4 +9,7 @@ ignore_names = [
     "do_*",
     "_status", "_open_folder", "_open_logs", "_open_file", "_open_log", "_clear", "_cancel", "_retry", "_choose_folder",
     "PickFormat", "JobKind", "PlanAttempts", "Texts", "Names", "Probe", "SameVideo", "Routes",
+    "Language", "Text", "WhatToDownload", "FileNames",
+    # настройки детектора речи: это поля чужого объекта sherpa-onnx, мы их только задаём
+    "min_silence_duration", "max_speech_duration",
 ]

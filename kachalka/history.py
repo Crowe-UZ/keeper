@@ -9,10 +9,12 @@ from .state import lock
 
 def job_key(job):
     """По чему узнаём то же самое видео. У пойманного потока ссылка каждый раз новая (токены),
-    поэтому для него это страница + название."""
+    поэтому для него это страница + название. Что именно просили (видео, звук, текст) — тоже часть ключа:
+    скачанное видео не мешает потом отдельно попросить текст."""
+    what = "+".join(job["want"])
     if job["sniffed"]:
-        return f"{job['mode']}|{job['page_url']}|{job['title']}"
-    return f"{job['mode']}|{job['url']}"
+        return f"{what}|{job['page_url']}|{job['title']}"
+    return f"{what}|{job['url']}"
 
 
 def load_history():

@@ -214,10 +214,10 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   try {
     if (info.menuItemId === "dl-link") {
-      await send(await buildJob({ ...tab, url: info.linkUrl || info.srcUrl, id: -1 }, "video"));
+      await send(await buildJob({ ...tab, url: info.linkUrl || info.srcUrl, id: -1 }));
     } else {
       let sent = 0;
-      for (const job of await buildJobs(tab, "video")) {
+      for (const job of await buildJobs(tab)) {
         // уже скачанное из меню не перекачиваем; «скачать ещё раз» есть в окне расширения
         try { await send(job); sent++; } catch (e) { if (!e.duplicate) throw e; notify("Пропущено", e.message); }
       }

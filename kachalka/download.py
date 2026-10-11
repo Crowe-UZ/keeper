@@ -4,15 +4,17 @@ import os
 import re
 import time
 import traceback
+from pathlib import Path
 
 import yt_dlp
 from .config import (ACTIVE, log)
 from .state import jobs, lock, stopping, summary, tasks, update
-from .files import describe_probe, probe, remove_parts, temp_dir, unique_template, write_cookies
+from .files import describe_probe, probe, remove_parts, safe_name, temp_dir, unique_template, write_cookies
 from .getcourse import GETCOURSE_LESSON_RE, SIGN_PLAYER_RE, getcourse_info, getcourse_players
 from .history import remember
 from .joblog import YtdlpLog, close_job_logger, job_logger, redact_cookies
 from .notify import toast
+from .outputs import make_outputs, want_label
 from .system import FFMPEG_DIR, JS_RUNTIMES, environment
 
 
@@ -63,6 +65,8 @@ def pick_format(mode, max_height, has_ffmpeg):
     """Какой формат просить у yt-dlp. max_height — ограничение качества из окна расширения (0 — максимум);
     если такого разрешения у видео нет — берём лучшее, что есть."""
     cap = f"[height<={max_height}]" if max_height else ""
+    if mode == "text":
+        return {"format": "bestaudio/best"}  # звук как есть: он временный, перекодировать незачем
     if mode == "audio":
         mp3 = {"postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "0"}]}
         return {"format": "bestaudio/best", **(mp3 if has_ffmpeg else {})}
@@ -75,9 +79,11 @@ def pick_format(mode, max_height, has_ffmpeg):
 
 
 def build_opts(job_id, job, cookie_file, lg):
+    tmp = temp_dir(job["save_dir"])
     opts = {
         "outtmpl": unique_template(job["title"], job["save_dir"]) if job["sniffed"] else "%(title).150B [%(id)s].%(ext)s",
-        "paths": {"home": job["save_dir"], "temp": str(temp_dir(job["save_dir"]))},
+        # когда нужен только текст, звуковая дорожка в папку с видео не попадает вовсе — остаётся в .tmp
+        "paths": {"home": str(tmp) if job["mode"] == "text" else job["save_dir"], "temp": str(tmp)},
         "logger": YtdlpLog(lg),
         "verbose": True,
         "noprogress": True,
@@ -120,7 +126,8 @@ def log_start(job_id, job, lg):
     lg.info(f"окружение: {json.dumps(environment(), ensure_ascii=False)}")
     lg.info(f"url: {job['url']}")
     lg.info(f"вкладка: {job['title']} | {job['page_url']}")
-    lg.info(f"режим: {job['mode']} | пойманный поток: {job['sniffed']} | качество: {job['max_height'] or 'максимум'}")
+    lg.info(f"нужно: {want_label(job['want'])} | качаем: {job['mode']} | пойманный поток: {job['sniffed']} | "
+            f"качество: {job['max_height'] or 'максимум'} | язык речи: {job['language']}")
     lg.info(f"заголовки: {job['headers']}")
     lg.info(f"cookies ({len(job['cookies'])} шт., только имена): {redact_cookies(job['cookies'])}")
     if job["debug"]:
@@ -142,49 +149,67 @@ def extract_infos(ydl, job, kind, lg):
     return [getcourse_info(ydl, pu, lg) for pu in players]
 
 
+def name_download(ydl, job_id, job, info, n, total, named, names):
+    """Назначить имя файлу очередного видео. Возвращает имя для текста, если качаем только звук под распознавание.
+    Назначенные имена копим в names: по ним убираются недокачанные куски и временная звуковая дорожка."""
+    name = job["title"] if total == 1 else f"{job['title']} — часть {n}"
+    if job["mode"] == "text":  # сам звук временный и лежит в .tmp под номером задачи; имя нужно только тексту
+        names.append(f"{job_id}-{n}")
+        ydl.params["outtmpl"]["default"] = f"{job_id}-{n}.%(ext)s"
+        return safe_name(name if named else f"{info.get('title') or job['title']} [{info.get('id')}]")
+    if named:
+        template = unique_template(name, job["save_dir"])
+        names.append(template.removesuffix(".%(ext)s").replace("%%", "%"))
+        ydl.params["outtmpl"]["default"] = template
+    else:
+        update(job_id, title=info.get("title") or job["title"])
+    return None
+
+
 def download_infos(ydl, job_id, job, infos, named, names, lg):
-    """Скачать каждое видео. named — имя файла берём из заголовка вкладки (а не из названия на сайте);
-    назначенные имена копим в names, чтобы при неудаче убрать их недокачанные куски."""
+    """Скачать каждое видео. named — имя файла берём из заголовка вкладки (а не из названия на сайте).
+    Возвращает пары (что скачалось, имя для текста)."""
     results = []
     for n, info in enumerate(infos, 1):
         lg.info(f"видео {n}/{len(infos)}: extractor={info.get('extractor')} id={info.get('id')} title={info.get('title')!r}")
         lg.info(f"доступно форматов: {len(info.get('formats') or [])}")
-        if named:
-            name = job["title"] if len(infos) == 1 else f"{job['title']} — часть {n}"
-            template = unique_template(name, job["save_dir"])
-            names.append(template.removesuffix(".%(ext)s").replace("%%", "%"))
-            ydl.params["outtmpl"]["default"] = template
-        else:
-            update(job_id, title=info.get("title") or job["title"])
+        stem = name_download(ydl, job_id, job, info, n, len(infos), named, names)
         result = ydl.process_ie_result(info, download=True)
         for f in result.get("requested_formats") or [result]:
             lg.info(f"выбран формат: {describe_format(f)}")
-        results.append(result)
+        results.append((result, stem))
     return results
 
 
-def describe_result(result, lg):
-    """(путь, размер в МБ, что реально лежит в файле) для одного скачанного видео."""
+def finish_result(job_id, job, result, stem, lg):
+    """Довести одно скачанное видео до того, что просили. Возвращает (главный файл или None, описание для окна)."""
     path = ((result.get("requested_downloads") or [{}])[0].get("filepath")) or result.get("filepath")
-    exists = bool(path) and os.path.exists(path)
-    p = probe(path) if exists else None
-    if p:
-        lg.info(f"ffprobe итога: {json.dumps(p, ensure_ascii=False)}")
-    return path, os.path.getsize(path) / 1024 / 1024 if exists else 0, describe_probe(p)
+    if not path or not os.path.exists(path):
+        raise RuntimeError("yt-dlp сообщил об успехе, но скачанного файла нет на месте.")
+    files, note = make_outputs(job_id, job, Path(path), stem, lg)
+    about = []
+    if job["mode"] != "text":  # временную звуковую дорожку описывать незачем — её уже не будет
+        p = probe(path)
+        if p:
+            lg.info(f"ffprobe итога: {json.dumps(p, ensure_ascii=False)}")
+        about.append(describe_probe(p))
+    main = next((files[k] for k in ("video", "audio", "text") if k in files), None)
+    for kind, file in files.items():
+        size = os.path.getsize(file) / 1024 / 1024
+        lg.info(f"готов файл ({kind}): {file} ({size:.1f} МБ)")
+    return main, " · ".join(x for x in [*about, note] if x)
 
 
 def finish_ok(job_id, job, results, started, lg):
-    done = [describe_result(r, lg) for r in results]
-    first = done[0][0] if done else None
+    done = [finish_result(job_id, job, result, stem, lg) for result, stem in results]
+    first = str(done[0][0]) if done and done[0][0] else None
     parts = f" ({len(done)} видео)" if len(done) > 1 else ""
-    update(job_id, status="готово" + parts, percent=100, speed="", file=first, quality=done[0][2] if done else "")
-    for path, size, quality in done:
-        msg = f"[{job_id}] ГОТОВО за {time.time() - started:.0f} с: {path} ({size:.1f} МБ) {quality}"
-        lg.info(msg)
-        log.info(msg)
+    update(job_id, status="готово" + parts, percent=100, speed="", eta=None, file=first, quality=done[0][1] if done else "")
+    for path, quality in done:
+        log.info(f"[{job_id}] ГОТОВО за {time.time() - started:.0f} с ({want_label(job['want'])}): {path} {quality}")
     if first:
         remember(job, first)
-        toast("Видео скачано", job["title"], first)
+        toast("Готово: " + want_label(job["want"]), job["title"], first)
 
 
 def finish_failed(job_id, job, error, lg):
@@ -201,24 +226,25 @@ def finish_failed(job_id, job, error, lg):
         toast("Не получилось скачать", f"{job['title']}\n{friendly_error(msg)}")
 
 
-def attempt(job_id, job, kind, cookie_file, names, started, lg):
-    """Одна попытка скачать задачу целиком — с заданными cookies или без них."""
+def attempt(job_id, job, kind, cookie_file, names, lg):
+    """Одна попытка скачать задачу — с заданными cookies или без них. Возвращает то, что скачалось."""
     update(job_id, status="подготовка", error=None)
     with yt_dlp.YoutubeDL(build_opts(job_id, job, cookie_file, lg)) as ydl:
         infos = extract_infos(ydl, job, kind, lg)
         named = job["sniffed"] or kind != "page"
         results = download_infos(ydl, job_id, job, infos, named, names, lg)
-    finish_ok(job_id, job, results, started, lg)
-    names.clear()  # всё докачано — убирать нечего
+    if job["mode"] != "text":
+        names.clear()  # всё докачано — убирать нечего; временную звуковую дорожку уберём после распознавания
+    return results
 
 
-def run_attempts(job_id, job, cookie_file, names, started, lg):
+def run_attempts(job_id, job, cookie_file, names, lg):
     kind = job_kind(job["url"])
     attempts = plan_attempts(job, kind, cookie_file)
     for i, cf in enumerate(attempts):
         lg.info(f"попытка {i + 1}/{len(attempts)}: {'с cookies' if cf else 'без cookies'}")
         try:
-            return attempt(job_id, job, kind, cf, names, started, lg)
+            return attempt(job_id, job, kind, cf, names, lg)
         except Exception as e:  # noqa: BLE001 — причина записана; последняя попытка, отмена и закрытие пробрасываются дальше
             lg.warning(f"попытка {i + 1} не удалась: {e}\n{traceback.format_exc()}")
             if i == len(attempts) - 1 or stopping.is_set() or job.get("cancel"):
@@ -232,9 +258,10 @@ def run_download(job_id):
     started = time.time()
     log_start(job_id, job, lg)
     cookie_file = write_cookies(job["cookies"])
-    names = []  # имена файлов, которые мы сами назначили: по ним при неудаче убираем недокачанные куски
+    names = []  # имена файлов, которые мы сами назначили: по ним в конце убираем недокачанное и временное
     try:
-        run_attempts(job_id, job, cookie_file, names, started, lg)
+        results = run_attempts(job_id, job, cookie_file, names, lg)
+        finish_ok(job_id, job, results, started, lg)  # звук из видео и распознавание — уже без повторных попыток скачивания
     except Exception as e:  # noqa: BLE001 — yt-dlp и сайты бросают что угодно; любой сбой задачи становится её статусом и записью в лог
         finish_failed(job_id, job, e, lg)
     finally:

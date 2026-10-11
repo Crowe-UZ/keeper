@@ -1,5 +1,5 @@
 import {
-  api, apiUp, startServer, isDown, buildJob, buildJobs, send, getCaught, getQuality,
+  api, apiUp, startServer, isDown, buildJob, buildJobs, send, getCaught, getQuality, getWant, getLanguage, WANT,
   groupVideos, videoName, videoTitle, isKnownSite, clientLog,
 } from "./common.js";
 
@@ -86,14 +86,13 @@ async function renderCaught() {
   let hint = known
     ? "Сайт известен — качаю по ссылке в максимальном качестве."
     : many
-      ? `На странице ${videos.length} видео. Кнопки сверху качают все, кнопки в списке — одно. Наведи на строку — плеер подсветится на странице.`
+      ? `На странице ${videos.length} видео. Большая кнопка качает все, кнопка в списке — одно. Наведи на строку — плеер подсветится на странице.`
       : caught.items.length
         ? "Поймал видеопоток на странице — качаю лучший."
         : "Видео не поймано. Включи ролик (▶) на странице, подожди пару секунд и открой это окно снова.";
   if (caught.drm) hint += '<br><span class="warn">⚠ Похоже, видео защищено DRM — скорее всего, скачать не выйдет.</span>';
   $("hint").innerHTML = hint;
-  $("video").textContent = many ? `⬇ Все видео (${videos.length})` : "⬇ Видео";
-  $("audio").textContent = many ? `🎵 Звук всех` : "🎵 Звук";
+  $("go").textContent = many ? `⬇ Скачать все (${videos.length})` : "⬇ Скачать";
 
   const best = new Set(videos.map((v) => v.best));
   const html = !items.length ? "" : `<div class="section">Видео на странице<span>${videos.length > 1 ? videos.length : ""}</span></div>` + videos.map((v, n) => `
@@ -103,8 +102,7 @@ async function renderCaught() {
         <span class="name u" title="${esc(videoName(videos, n))}">${esc(videoName(videos, n))}</span>
         <span class="u">${esc([v.duration ? clock(v.duration) : "", v.playing ? "играет" : "", kindName(v.best)].filter(Boolean).join(" · "))}</span>
       </div>
-      <button class="small primary" data-mode="video">⬇ Видео</button>
-      <button class="small" data-mode="audio" title="Только звук (mp3)">🎵</button>
+      <button class="small primary" title="Скачать это видео — то, что отмечено вверху">⬇ Скачать</button>
     </div>`).join("") + `
     <details><summary>Подробнее: все потоки (${items.length})</summary>` + items.map((it, i) => `
     <div class="item">
@@ -120,14 +118,14 @@ async function renderCaught() {
       row.onmouseenter = () => highlight(videos[n], true);
       row.onmouseleave = () => highlight(videos[n], false);
       row.querySelectorAll("button").forEach((b) => {
-        b.onclick = () => run(async () => submit([await buildJob(tab, b.dataset.mode, videos[n].best, {
+        b.onclick = () => run(async () => submit([await buildJob(tab, videos[n].best, {
           title: videoTitle(tab, videos, n),
           why: `видео ${n + 1} из ${videos.length} — выбрано в списке`,
         })]));
       });
     });
     $("caught").querySelectorAll("button[data-i]").forEach((b) => {
-      b.onclick = () => run(async () => submit([await buildJob(tab, "video", items[b.dataset.i])]));
+      b.onclick = () => run(async () => submit([await buildJob(tab, items[b.dataset.i])]));
     });
   }
   // превью меняется, пока видео играет, — обновляем его мимо перерисовки, чтобы строка не мигала
@@ -177,24 +175,30 @@ function highlight(video, on) {
 }
 
 // ----- очередь загрузок -----
-const WAITING = ["подготовка", "склейка", "отмена…"];  // идёт работа, но процента нет — полоска «бегает»
+const WAITING = ["подготовка", "склейка", "звук из видео", "отмена…"];  // идёт работа, но процента нет — полоска «бегает»
+const WITH_PERCENT = ["скачивается", "загрузка модели", "распознавание"];  // у этих этапов есть процент
+const ICON = { video: "🎬", audio: "🎵", text: "📝" };
+const NAME = { video: "видео", audio: "звук", text: "текст" };
 const FINISHED = /^(готово|ошибка|отменено)/;  // такие «Очистить» убирает из списка
-const CANCELLABLE =["в очереди", "подготовка", "скачивается"];  // склейку прервать нельзя — она и так секунды
+const CANCELLABLE = ["в очереди", "подготовка", "скачивается", "загрузка модели", "распознавание"];  // склейку прервать нельзя — она и так секунды
 
 function jobHtml(j) {
   const busy = j.status === "скачивается";
+  const counting = WITH_PERCENT.includes(j.status);
+  const want = (j.want || [j.mode]).map((w) => NAME[w]).join(" + ");
   const done = j.status.startsWith("готово");
   const eta = busy && j.eta ? "осталось " + (j.eta >= 60 ? Math.floor(j.eta / 60) + " мин" : Math.round(j.eta) + " с") : "";
   const extra = [j.quality, busy && j.done_mb ? j.done_mb + " МБ" : "", busy ? j.speed : "", eta].filter(Boolean).join(" · ");
+  const several = (j.want || []).length > 1;  // одно — понятно по значку; сочетание называем словами
   const cls = done ? "done" : j.error ? "failed" : WAITING.includes(j.status) ? "waiting" : "";
   return `
     <div class="job ${cls}">
       <div class="top">
-        <div class="title u" title="${esc(j.title)}">${j.mode === "audio" ? "🎵" : "🎬"} ${esc(j.title)}</div>
-        <div class="pct">${busy ? j.percent + "%" : ""}</div>
+        <div class="title u" title="${esc(j.title)}">${(j.want || [j.mode]).map((w) => ICON[w]).join("")} ${esc(j.title)}</div>
+        <div class="pct">${counting ? j.percent + "%" : ""}</div>
       </div>
       <div class="bar"><div style="width:${j.percent}%"></div></div>
-      <div class="st">${esc(j.status)}${extra ? " · " + esc(extra) : ""}${j.error ? " — " + esc(j.error) : ""}</div>
+      <div class="st">${several ? esc(want) + " · " : ""}${esc(j.status)}${extra ? " · " + esc(extra) : ""}${j.error ? " — " + esc(j.error) : ""}</div>
       <div class="acts">${
         CANCELLABLE.includes(j.status) ? `<button class="ghost small" data-act="/cancel" data-id="${esc(j.id)}">✕ Отмена</button>` : ""
       }${
@@ -238,13 +242,31 @@ $("queue").onclick = (e) => {
 const allTabs = (await chrome.tabs.query({})).filter((t) => /^https?:/.test(t.url));
 $("all").textContent = `Скачать со всех вкладок (${allTabs.length})`;
 
-$("video").onclick = () => run(async () => submit(await buildJobs(tab, "video")));
-$("audio").onclick = () => run(async () => submit(await buildJobs(tab, "audio")));
+$("go").onclick = () => run(async () => submit(await buildJobs(tab)));
 $("all").onclick = () => run(async () => {
   const jobs = [];
-  for (const t of allTabs) jobs.push(...await buildJobs(t, "video"));
+  for (const t of allTabs) jobs.push(...await buildJobs(t));
   await submit(jobs);
 });
+
+// что получить: три переключателя, хотя бы один всегда включён; выбор запоминается
+let want = await getWant();
+function showWant() {
+  document.querySelectorAll("#want .chip").forEach((c) => c.classList.toggle("on", want.includes(c.dataset.want)));
+  $("languageRow").hidden = !want.includes("text");  // язык речи нужен только для текста
+}
+document.querySelectorAll("#want .chip").forEach((c) => {
+  c.onclick = () => {
+    const next = WANT.filter((w) => (w === c.dataset.want ? !want.includes(w) : want.includes(w)));
+    if (!next.length) return;  // последний снять нельзя: качать «ничего» незачем
+    want = next;
+    chrome.storage.local.set({ want });
+    showWant();
+  };
+});
+showWant();
+$("language").value = await getLanguage();
+$("language").onchange = () => chrome.storage.local.set({ language: $("language").value });
 
 $("quality").value = String(await getQuality());
 $("quality").onchange = () => chrome.storage.local.set({ quality: +$("quality").value });

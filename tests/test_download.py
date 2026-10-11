@@ -26,6 +26,10 @@ class PickFormat(unittest.TestCase):
         self.assertEqual(download.pick_format("audio", 0, has_ffmpeg=False), {"format": "bestaudio/best"})
 
 
+    def test_text_only_takes_the_sound_track_as_is(self):
+        self.assertEqual(download.pick_format("text", 720, has_ffmpeg=True), {"format": "bestaudio/best"})
+
+
 class JobKind(unittest.TestCase):
     def test_getcourse_player_link(self):
         self.assertEqual(download.job_kind("https://vh.example.com/sign-player/?json=abc"), "player")

@@ -60,10 +60,24 @@ try {
     if (b) b.click();
     return !!b;
   }, titlePart, label);
-  const cardBtn = (n, mode) => popup.click(`.video[data-n="${n}"] button[data-mode="${mode}"]`);
+  // отметить вверху, что нужно получить (видео / звук / текст), — как это делает человек, кликами по переключателям
+  const choose = async (...want) => {
+    // сначала включаем нужное, потом выключаем лишнее: последний включённый переключатель снять нельзя
+    for (const pass of [true, false]) {
+      for (const w of ["video", "audio", "text"]) {
+        const on = await popup.$eval(`#want .chip[data-want="${w}"]`, (c) => c.classList.contains("on"));
+        if (on !== want.includes(w) && want.includes(w) === pass) await popup.click(`#want .chip[data-want="${w}"]`);
+      }
+    }
+  };
+  const cardBtn = async (n, ...want) => { await choose(...want); await popup.click(`.video[data-n="${n}"] button`); };
 
   // ---- окно: состояние, список видео ----
   check("качалка отвечает", (await text("#stateText")) === "работает", await text("#stateText"));
+  // как в жизни: вкладка с видео на виду (в фоновой вкладке браузер ставит видео на паузу), окно расширения — поверх неё
+  await lesson.bringToFront();
+  await sleep(5000);
+  await popup.bringToFront();
   const cards = await popup.$$eval(".video", (els) => els.map((e) => ({
     name: e.querySelector(".name").innerText.trim(), meta: e.querySelectorAll(".info .u")[1].innerText.trim(),
     thumb: e.querySelector(".thumb").classList.contains("has"),
@@ -75,7 +89,14 @@ try {
   check("превью-кадры есть", cards.every((c) => c.thumb));
   check("длительность и «играет»", cards.every((c) => /\d:\d\d/.test(c.meta) && c.meta.includes("играет")), cards.map((c) => c.meta).join(" | "));
   check("для каждого видео выбран мастер-плейлист", cards.every((c) => c.meta.includes("все качества")));
-  check("верхняя кнопка: все видео", (await text("#video")) === "⬇ Все видео (2)", await text("#video"));
+  check("большая кнопка: скачать все", (await text("#go")) === "⬇ Скачать все (2)", await text("#go"));
+  check("по умолчанию отмечено только «Видео»", (await popup.$$eval("#want .chip.on", (c) => c.map((x) => x.dataset.want))).join() === "video");
+  await popup.click('#want .chip[data-want="video"]');
+  check("последний переключатель снять нельзя", (await popup.$$("#want .chip.on")).length === 1);
+  check("язык речи скрыт, пока текст не нужен", await popup.$eval("#languageRow", (r) => r.hidden));
+  await choose("video", "text");
+  check("язык речи появляется вместе с «Текстом»", !(await popup.$eval("#languageRow", (r) => r.hidden)));
+  await choose("video");
   check("папка показана", !!(await text("#folderPath")), await text("#folderPath"));
 
   // ---- «Подробнее» не схлопывается при обновлении списка ----
@@ -127,10 +148,21 @@ try {
   // ---- звук ----
   await cardBtn(1, "audio");
   j = await waitJob((x) => x.title.startsWith("🎵") && (x.st.startsWith("готово") || x.st.startsWith("ошибка")));
-  check("«🎵» качает звук (mp3)", !!j?.st.startsWith("готово"), j?.st);
+  check("«Звук» качает mp3", !!j?.st.startsWith("готово"), j?.st);
+
+  // ---- сочетание: звук + текст одной задачей (в тестовом ролике речи нет — проверяем, что этап распознавания проходит) ----
+  await popup.evaluate(() => document.querySelector('#queue [data-act="/clear"]')?.click());
+  await sleep(1500);
+  await popup.click("#notice button").catch(() => {});
+  await cardBtn(0, "audio", "text");
+  j = await waitJob((x) => x.title.startsWith("🎵📝") && (x.st.includes("готово") || x.st.includes("ошибка")), 300000);
+  check("«Звук + Текст» — одна задача с обоими значками, доходит до конца", !!j?.st.includes("готово"), j?.st);
+  check("в статусе названо сочетание", !!j?.st.startsWith("звук + текст"), j?.st);
+  await choose("video");
 
   // ---- верхняя кнопка: все видео, уже скачанное пропускается ----
-  await popup.click("#video");
+  await choose("video");
+  await popup.click("#go");
   j = await waitJob((x) => x.title.includes("1. Часть первая") && x.st.startsWith("скачивается"), 60000);
   check("«Все видео» ставит в очередь видео 1 с названием в имени файла", !!j, j?.title);
   check("…а скачанное видео 2 пропускает с предупреждением", !!(await text("#notice span"))?.startsWith("Уже скачано"), await text("#notice span"));

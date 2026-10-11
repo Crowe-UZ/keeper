@@ -130,7 +130,7 @@ async function cookiesFor(urls) {
 }
 
 // Что качать для вкладки: известный сайт -> ссылка страницы; иначе пойманный поток; иначе всё равно страница
-export async function buildJob(tab, mode, item, { title, why } = {}) {
+export async function buildJob(tab, item, { title, why } = {}) {
   const caught = await getCaught(tab.id);
   const known = isKnownSite(tab.url);
   const chosen = item || (!known && caught.items.length ? pickBest(caught.items) : null);
@@ -143,7 +143,8 @@ export async function buildJob(tab, mode, item, { title, why } = {}) {
     url: chosen ? chosen.url : tab.url,
     title: title || tab.title,
     page_url: tab.url,
-    mode,
+    want: await getWant(),
+    language: await getLanguage(),
     max_height: await getQuality(),
     sniffed: !!chosen,
     headers: chosen ? chosen.headers : {},
@@ -164,12 +165,12 @@ export function videoTitle(tab, videos, n) {
 }
 
 // Задачи для вкладки: если на странице несколько видео — по задаче на каждое (лучший поток каждого)
-export async function buildJobs(tab, mode) {
+export async function buildJobs(tab) {
   const videos = isKnownSite(tab.url) ? [] : groupVideos(await getCaught(tab.id));
-  if (videos.length < 2) return [await buildJob(tab, mode)];
+  if (videos.length < 2) return [await buildJob(tab)];
   const jobs = [];
   for (const [n, v] of videos.entries()) {
-    jobs.push(await buildJob(tab, mode, v.best, {
+    jobs.push(await buildJob(tab, v.best, {
       title: videoTitle(tab, videos, n),
       why: `видео ${n + 1} из ${videos.length} на странице — лучший поток этого видео`,
     }));
@@ -184,6 +185,19 @@ export function clientLog(message, level = "error") {
     body: JSON.stringify({ message, level }),
   }).catch(() => {});
   (level === "error" ? console.error : console.log)("[качалка]", message);
+}
+
+// Что получить из загрузки: видео, звук (mp3), текст (распознанная речь) — в любом сочетании, по файлу на каждое
+export const WANT = ["video", "audio", "text"];
+export async function getWant() {
+  const saved = (await chrome.storage.local.get("want")).want;
+  const want = WANT.filter((w) => (saved || []).includes(w));
+  return want.length ? want : ["video"];
+}
+
+// Язык речи для распознавания: auto — определить самой, ru — русский, multi — английский и другие европейские
+export async function getLanguage() {
+  return (await chrome.storage.local.get("language")).language || "auto";
 }
 
 // Ограничение качества из окна расширения: высота кадра (1080, 720…), 0 — максимум
