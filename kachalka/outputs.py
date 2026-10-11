@@ -131,6 +131,29 @@ def make_text(job_id, job, media, stem, lg, ahead=None):
     return path, f"текст готов, слов: {words}"
 
 
+def from_local(job_id, job, media, lg):
+    """Сделать недостающее из уже скачанного файла — без новой загрузки. media — видео или звук с диска.
+    Новые файлы кладём рядом с ним, а не в нынешнюю папку загрузок. Возвращает ({вид: путь}, пояснение про текст)."""
+    want, folder = job["want"], media.parent
+    files, note = {}, ""
+    if "video" in want:
+        files["video"] = media
+    if "audio" in want:
+        ext = extension("audio", job["formats"])
+        if media.suffix.lower() == ext:
+            files["audio"] = media  # звук в нужном формате уже есть
+        else:
+            update(job_id, status="звук из видео", percent=0, speed="")
+            files["audio"] = free_path(folder, media.stem, ext)
+            extract_audio(media, files["audio"], job["formats"]["audio"], lambda: job.get("cancel") or stopping.is_set())
+            lg.info(f"звук из готового файла: {files['audio']}")
+    if "text" in want:
+        path, note = make_text(job_id, {**job, "save_dir": str(folder)}, media, media.stem, lg)
+        if path:
+            files["text"] = path
+    return files, note
+
+
 def make_outputs(job_id, job, media, stem, lg, ahead=None):
     """Из скачанного файла сделать всё, что просили. media — что скачалось; stem — имя для текста,
     когда скачивалась только временная звуковая дорожка. Возвращает ({вид: путь}, пояснение про текст)."""

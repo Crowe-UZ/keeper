@@ -14,10 +14,10 @@ from .errors import UserError
 from .state import jobs, lock, stopping, summary, tasks, update
 from .files import describe_probe, probe, remove_parts, safe_name, temp_dir, unique_template, write_cookies
 from .getcourse import GETCOURSE_LESSON_RE, SIGN_PLAYER_RE, getcourse_info, getcourse_players
-from .history import remember
+from .history import downloaded_files, remember
 from .joblog import YtdlpLog, close_job_logger, job_logger, redact_cookies
 from .notify import toast
-from .outputs import clean_formats, make_outputs, want_label
+from .outputs import clean_formats, from_local, make_outputs, want_label
 from .system import FFMPEG_DIR, JS_RUNTIMES, environment
 from .textahead import TEXT_FORMAT, TextAhead
 
@@ -236,7 +236,10 @@ def name_download(ydl, job_id, job, info, n, total, named, names):
         ydl.params["outtmpl"]["default"] = f"{job_id}-{n}.%(ext)s"
         return safe_name(name if named else f"{info.get('title') or job['title']} [{info.get('id')}]")
     if named:
-        template = unique_template(name, job["save_dir"])
+        # имя закрепляется за задачей: «Повторить» и попытка с cookies пишут в тот же файл, и yt-dlp
+        # продолжает его с места обрыва, а не качает заново под именем «… (2)»
+        kept = job.setdefault("templates", {})
+        template = kept[n] = kept.get(n) or unique_template(name, job["save_dir"])
         names.append(template.removesuffix(".%(ext)s").replace("%%", "%"))
         ydl.params["outtmpl"]["default"] = template
     else:
@@ -266,9 +269,11 @@ def finish_result(job_id, job, result, stem, lg, ahead=None):
     path = ((result.get("requested_downloads") or [{}])[0].get("filepath")) or result.get("filepath")
     if not path or not os.path.exists(path):
         raise UserError("Файл скачался, но пропал — возможно, его удалил антивирус. Нажми «Повторить».")
-    files, note = make_outputs(job_id, job, Path(path), stem, lg, ahead)
+    local = result.get("local")
+    files, note = from_local(job_id, job, Path(path), lg) if local else make_outputs(job_id, job, Path(path), stem, lg, ahead)
     about = []
-    if job["mode"] != "text":  # временную звуковую дорожку описывать незачем — её уже не будет
+    # временную звуковую дорожку описывать незачем — её уже не будет; готовый файл с диска — только если просили видео
+    if job["mode"] != "text" and (not local or "video" in files):
         p = probe(path)
         if p:
             lg.info(f"ffprobe итога: {json.dumps(p, ensure_ascii=False)}")
@@ -365,9 +370,40 @@ def conclude(job_id, job, outcome, cookie_file, names, started, lg):
         if cookie_file:
             with contextlib.suppress(OSError):  # файл cookies уже убрали — остальная уборка всё равно нужна
                 os.unlink(cookie_file)
-        remove_parts(job["save_dir"], names)
+        if clean_after(job, outcome):
+            remove_parts(job["save_dir"], names)
+            job.pop("templates", None)  # имя свободно: при «Повторить» оно подбирается заново
         close_job_logger(job_id)
         release(job_id, job)  # в самом конце: до этого «Повторить» ждёт, а «Убрать готовые» задачу не трогает
+
+
+def clean_after(job, outcome):
+    """Убирать ли недокачанное. После сбоя — нет: «Повторить» продолжит с того же места (всё равно уберётся
+    при закрытии программы). После отмены и после успеха — да."""
+    return bool(job.get("cancel")) or not isinstance(outcome, BaseException)
+
+
+VIDEO_FILES = (".mp4", ".mkv", ".webm", ".mov")
+AUDIO_FILES = (".m4a", ".mp3", ".opus", ".ogg", ".aac", ".wav")
+
+
+def local_source(job):
+    """Уже скачанный файл этого же видео, из которого можно сделать всё, что просят, — тогда качать незачем.
+    Из видео получается и звук, и текст; из звука — только текст и звук. «Скачать ещё раз» качает заново."""
+    if job.get("force"):
+        return None
+    found = [Path(f) for f in downloaded_files(job["key"])]
+    video = next((f for f in found if f.suffix.lower() in VIDEO_FILES), None)
+    audio = next((f for f in found if f.suffix.lower() in AUDIO_FILES), None)
+    return video or (None if "video" in job["want"] else audio)
+
+
+def use_local(job_id, job, media, lg):
+    """Вместо скачивания взять готовый файл с диска. Возвращает то же, что и попытка скачивания."""
+    lg.info(f"это видео уже скачано — беру готовый файл, без загрузки: {media}")
+    log.info(f"[{job_id}] уже скачано, делаю из готового файла: {media.name}")
+    update(job_id, save_dir=str(media.parent))  # новые файлы лягут рядом с ним
+    return [({"filepath": str(media), "local": True}, None)], None
 
 
 def claim(job_id):
@@ -396,8 +432,9 @@ def run_download(job_id):
     log_start(job_id, job, lg)
     cookie_file = write_cookies(job["cookies"])
     names = []  # имена файлов, которые мы сами назначили: по ним в конце убираем недокачанное и временное
+    local = local_source(job)
     try:
-        outcome = run_attempts(job_id, job, cookie_file, names, lg)
+        outcome = use_local(job_id, job, local, lg) if local else run_attempts(job_id, job, cookie_file, names, lg)
     except Exception as e:  # noqa: BLE001 — причину разберёт conclude: она станет статусом задачи и записью в лог
         # Дальше несём только текст ошибки. Сама ошибка держит за собой всё, что было открыто в момент сбоя, —
         # в том числе недокачанный файл: пока она жива, его не удалить, и «Повторить» получал имя с «(2)»

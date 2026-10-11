@@ -31,6 +31,18 @@ def remember(job, path):
         write_atomic(HISTORY_FILE, json.dumps(items[-1000:], ensure_ascii=False, indent=1))
 
 
+def source_of(key):
+    """Ключ без того, что просили: одно и то же видео, скачанное как «видео» и как «текст»."""
+    return key.partition("|")[2]
+
+
+def downloaded_files(key):
+    """Все лежащие на месте файлы этого же видео — что бы тогда ни просили (видео, звук, текст)."""
+    source = source_of(key)
+    return [h["file"] for h in load_history()
+            if source_of(h.get("key") or "") == source and os.path.exists(h.get("file") or "")]
+
+
 def already_downloaded(key):
     """Файл, в который это видео уже скачано, — если он ещё лежит на месте."""
     for h in load_history():

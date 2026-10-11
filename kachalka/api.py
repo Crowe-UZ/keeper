@@ -257,7 +257,7 @@ class Handler(BaseHTTPRequestHandler):
             busy = not new["force"] and any(v["key"] == key and not v["status"].startswith(FINAL) for v in jobs.values())
             if not busy and not done:
                 jobs[job_id] = {
-                    **{k: v for k, v in new.items() if k != "force"},
+                    **new,
                     "key": key, "cancel": False, "running": False, "save_dir": str(state.save_dir),
                     "status": "в очереди", "percent": 0, "speed": "", "eta": None, "done_mb": 0, "quality": "", "file": None,
                     "error": None, "log_file": None,
