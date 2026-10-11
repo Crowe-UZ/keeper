@@ -27,3 +27,6 @@ installer/cache/
 installer/stage/
 installer/out/
 installer/art/
+
+# ролик о программе: собирается заново скриптами из brag-output/work
+brag-output/
