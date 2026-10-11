@@ -12,8 +12,7 @@ tasks = queue.Queue()
 stopping = threading.Event()  # качалка закрывается: загрузки прервать, новые не начинать
 last_activity = time.time()  # когда расширение последний раз что-то спрашивало
 tray = None
-save_dir = load_save_dir()  # текущая папка; меняется кнопкой «Сменить папку», задача запоминает свою
-save_dir.mkdir(parents=True, exist_ok=True)
+save_dir = load_save_dir()  # текущая папка (уже создана); меняется кнопкой «Сменить», задача запоминает свою
 
 
 def update(job_id, **fields):

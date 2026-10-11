@@ -12,7 +12,26 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent  # папка проекта: server.py, settings.json, logs, extension
 HOST, PORT = "127.0.0.1", int(os.environ.get("KACHALKA_PORT", 5577))
 SETTINGS_FILE = ROOT / "settings.json"
-DEFAULT_SAVE_DIR = Path.home() / "Downloads" / "Videos"
+
+
+def downloads_folder():
+    """Настоящая папка «Загрузки» этого пользователя. Её переносят на другой диск и в OneDrive, поэтому
+    спрашиваем у Windows, а не считаем, что она лежит в C:\\Users\\имя\\Downloads."""
+    try:
+        import ctypes
+        import uuid
+        guid = (ctypes.c_byte * 16).from_buffer_copy(uuid.UUID("374DE290-123F-4565-9164-39C4925E467B").bytes_le)
+        found = ctypes.c_wchar_p()
+        if ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(found)) == 0 and found.value:
+            path = Path(found.value)
+            ctypes.windll.ole32.CoTaskMemFree(found)
+            return path
+    except (AttributeError, OSError, ValueError):  # не Windows или система не ответила — берём привычное место
+        pass
+    return Path.home() / "Downloads"
+
+
+DEFAULT_SAVE_DIR = downloads_folder() / "Videos"
 
 
 def extension_id():
@@ -47,11 +66,24 @@ def save_settings(**fields):
     write_atomic(SETTINGS_FILE, json.dumps({**load_settings(), **fields}, ensure_ascii=False))
 
 
+def first_usable(folders):
+    """Первая папка из списка, которая есть или которую удаётся создать. Не подошла ни одна — папка downloads
+    рядом с программой: туда install.bat уже писал. Программа обязана запуститься в любом случае."""
+    for folder in [*folders, ROOT / "downloads"]:
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            return folder
+        except OSError:  # диск отключён, нет прав, на пути файл — пробуем следующую
+            continue
+    return ROOT / "downloads"
+
+
 def load_save_dir():
+    """Куда сохранять: выбранная папка, если она на месте; иначе «Загрузки\\Videos»; иначе папка в профиле.
+    Раньше сохранённая папка на отключённом диске не давала программе запуститься вовсе."""
     saved = load_settings().get("save_dir")
-    if isinstance(saved, str) and Path(saved).is_dir():
-        return Path(saved)
-    return DEFAULT_SAVE_DIR  # папку не выбирали, или её с тех пор удалили
+    chosen = [Path(saved)] if isinstance(saved, str) and Path(saved).is_dir() else []
+    return first_usable([*chosen, DEFAULT_SAVE_DIR, Path.home() / "Keeper"])
 
 
 WORKERS = 3  # сколько видео качается одновременно, остальные ждут в очереди
