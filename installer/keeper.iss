@@ -38,7 +38,7 @@ Name: "ru"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [Messages]
 ru.WelcomeLabel1=Установка Keeper
-ru.WelcomeLabel2=Keeper скачивает видео с открытой вкладки Chrome, а ещё звук отдельно и текст того, что в видео говорят.%n%nЧто будет установлено (около 410 МБ на диске):%n%n  •  программа Keeper и расширение для Chrome;%n  •  Python и ffmpeg — свои, внутри папки программы. Если они у тебя уже стоят, их это не затронет;%n  •  по желанию — распознавание речи (выберешь на следующих шагах).%n%nВсё ставится в одну папку, которую ты выберешь дальше. Права администратора не нужны. Удалить можно в «Параметры → Приложения».%n%nПоследний шаг — добавить расширение в Chrome — делается вручную: после установки откроется страница с подсказкой.
+ru.WelcomeLabel2=Keeper скачивает видео с открытой вкладки Chrome, а ещё звук и текст того, что в видео говорят.%n%nБудет установлено (около 410 МБ):%n%n  •  программа Keeper и расширение для Chrome;%n  •  свои Python и ffmpeg — внутри папки программы, уже установленные не затрагиваются;%n  •  по желанию — распознавание речи для текста.%n%nВсё ставится в одну папку, права администратора не нужны.%n%nПоследний шаг — добавить расширение в Chrome — делается вручную: после установки откроется подсказка.
 ru.SelectDirLabel3=Keeper будет установлен в эту папку. Сюда же позже скачаются модели распознавания речи (до 660 МБ). Видео сохраняются отдельно — в «Загрузки\Videos», это меняется в окне расширения.
 ru.SelectDirBrowseLabel=Нажми «Далее», чтобы оставить эту папку, или «Обзор», чтобы выбрать другую. Выбирай папку, куда можно записывать без прав администратора (не Program Files).
 
@@ -65,9 +65,6 @@ Root: HKCU; Subkey: "Software\Google\Chrome\NativeMessagingHosts\com.kachalka.ho
 
 [Run]
 Filename: "{app}\python\python.exe"; Parameters: """{app}\launcher.py"" --install"; WorkingDir: "{app}"; StatusMsg: "Подключаю программу к Chrome…"; Flags: runhidden
-; окно с процентами: загрузка идёт минуты, без него установщик выглядел бы зависшим
-Filename: "{app}\python\python.exe"; Parameters: "-m kachalka.fetch_models ru"; WorkingDir: "{app}"; StatusMsg: "Скачиваю распознавание русской речи (170 МБ)…"; Tasks: model_ru
-Filename: "{app}\python\python.exe"; Parameters: "-m kachalka.fetch_models multi"; WorkingDir: "{app}"; StatusMsg: "Скачиваю распознавание других языков (490 МБ)…"; Tasks: model_multi
 Filename: "{app}\next-steps.html"; Description: "Показать, как добавить Keeper в Chrome (последний шаг)"; Flags: postinstall shellexec skipifsilent
 
 [UninstallDelete]
@@ -96,4 +93,43 @@ function InitializeUninstall(): Boolean;
 begin
   StopKeeper;
   Result := True;
+end;
+
+// Модели распознавания скачиваются прямо в окне установщика: программа-загрузчик работает скрыто и построчно
+// сообщает проценты, а мы показываем их на общей полосе. Раньше для этого открывалось отдельное чёрное окно.
+procedure ModelProgress(const S: String; const Error, FirstLine: Boolean);
+var
+  Percent: Integer;
+begin
+  Percent := StrToIntDef(Trim(S), -1);
+  if Percent >= 0 then
+  begin
+    WizardForm.ProgressGauge.Position := Percent * WizardForm.ProgressGauge.Max div 100;
+    WizardForm.FilenameLabel.Caption := Format('Скачано %d%%', [Percent]);
+  end;
+end;
+
+procedure FetchModel(const Name, Title: String);
+var
+  Code: Integer;
+begin
+  WizardForm.StatusLabel.Caption := Title;
+  WizardForm.FilenameLabel.Caption := '';
+  WizardForm.ProgressGauge.Position := 0;
+  if not ExecAndLogOutput(ExpandConstant('{app}\python\python.exe'), '-m kachalka.fetch_models --lines ' + Name,
+       ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code, @ModelProgress) or (Code <> 0) then
+    SuppressibleMsgBox('Распознавание речи сейчас не скачалось (нет интернета?).' + #13#10 +
+      'Ничего страшного: оно скачается само при первом запросе текста.', mbInformation, MB_OK, IDOK);
+  WizardForm.FilenameLabel.Caption := '';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    if WizardIsTaskSelected('model_ru') then
+      FetchModel('ru', 'Скачиваю распознавание русской речи (170 МБ)…');
+    if WizardIsTaskSelected('model_multi') then
+      FetchModel('multi', 'Скачиваю распознавание английского и других языков (490 МБ)…');
+  end;
 end;

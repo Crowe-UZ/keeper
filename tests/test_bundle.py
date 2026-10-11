@@ -83,6 +83,25 @@ class ModelsAhead(unittest.TestCase):
         code, _, _ = self.run_cli(["ru"], model=mock.Mock(side_effect=Cancelled("стоп")))
         self.assertEqual(code, 1)
 
+    def test_installer_gets_plain_progress_lines(self):
+        # установщик показывает проценты в своём окне: ему нужны короткие строки без русских букв и без повторов
+        def model(name, on_progress):
+            for percent in (0.4, 12.2, 12.9, 50.0, 100):
+                on_progress(percent)
+
+        out = io.StringIO()
+        with mock.patch.object(fetch_models, "ensure_vad"), mock.patch.object(fetch_models, "ensure_model", model):
+            code = fetch_models.main(["--lines", "ru"], out)
+        self.assertEqual(code, 0)
+        self.assertEqual(out.getvalue().split(), ["0", "12", "50", "100", "done"])
+        self.assertTrue(out.getvalue().isascii())
+
+    def test_plain_lines_report_a_failure(self):
+        out = io.StringIO()
+        with mock.patch.object(fetch_models, "ensure_vad"),                 mock.patch.object(fetch_models, "ensure_model", mock.Mock(side_effect=OSError("нет сети"))):
+            code = fetch_models.main(["--lines", "ru"], out)
+        self.assertEqual((code, out.getvalue().split()), (1, ["failed"]))
+
 
 if __name__ == "__main__":
     unittest.main()
