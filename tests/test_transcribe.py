@@ -32,6 +32,34 @@ class Language(unittest.TestCase):
         self.assertEqual(transcribe.pick_model("auto", ""), "ru")
 
 
+class LanguageProbe(unittest.TestCase):
+    def test_short_recording_is_listened_from_the_start(self):
+        self.assertEqual(transcribe.probe_start(0), 0)  # длительность узнать не удалось
+        self.assertEqual(transcribe.probe_start(90), 0)
+
+    def test_long_recording_skips_the_intro(self):
+        # заставка с музыкой и приветствие на другом языке — в начале; язык записи слушаем чуть дальше
+        self.assertEqual(transcribe.probe_start(240), 60)
+        self.assertEqual(transcribe.probe_start(3600), transcribe.PROBE_SKIP)
+
+    def test_silent_middle_falls_back_to_the_start(self):
+        heard = {90: "", 0: "Hello and welcome to the course"}
+        self.assertEqual(transcribe.probe_language(lambda start: heard[start], 3600), "multi")
+
+    def test_speech_found_after_the_intro_decides(self):
+        calls = []
+
+        def hear(start):
+            calls.append(start)
+            return "Сегодня мы разберём третью тему курса"
+
+        self.assertEqual(transcribe.probe_language(hear, 3600), "ru")
+        self.assertEqual(calls, [transcribe.PROBE_SKIP])  # начало второй раз не слушаем
+
+    def test_no_speech_anywhere_means_russian(self):
+        self.assertEqual(transcribe.probe_language(lambda start: "", 3600), "ru")
+
+
 class Text(unittest.TestCase):
     def test_pieces_are_joined_into_one_paragraph(self):
         self.assertEqual(transcribe.to_text([(0.0, 2.0, "Привет."), (2.1, 2.0, "Как дела?")]), "Привет. Как дела?\n")

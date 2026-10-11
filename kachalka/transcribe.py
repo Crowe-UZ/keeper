@@ -21,6 +21,9 @@ RATE = 16000  # обе модели и детектор речи ждут 16 к�
 VAD_WINDOW = 512  # детектор речи принимает звук порциями ровно такого размера
 MAX_PIECE = 20  # секунд: длиннее модели распознают хуже, поэтому речь без пауз режем принудительно
 SAMPLE_SPEECH = 20  # секунд речи, по которым определяем язык
+PROBE_SKIP = 90  # секунд: в длинной записи язык слушаем не с самого начала, а отступив столько
+PROBE_MIN = 120  # секунд: запись короче слушаем с начала — отступать в ней некуда
+VAD_THRESHOLD = 0.5  # насколько уверен должен быть детектор, что это речь (0–1)
 PARAGRAPH_PAUSE = 1.5  # секунд тишины между кусками — и начинается новый абзац
 PARAGRAPH_CHARS = 700  # абзац длиннее этого закрываем на ближайшем конце предложения
 PARAGRAPH_LIMIT = 1500  # а длиннее этого — на любом стыке: сплошная речь без точек не должна быть одним абзацем
@@ -60,6 +63,19 @@ def pick_model(language, sample_text):
     if language in ("ru", "multi"):
         return language
     return guess_language(sample_text) or "ru"
+
+
+def probe_start(total):
+    """С какой секунды слушать запись, чтобы определить язык. В начале часто заставка с музыкой или приветствие
+    на другом языке, поэтому в длинной записи отступаем на четверть, но не дальше PROBE_SKIP."""
+    return 0 if total < PROBE_MIN else min(total / 4, PROBE_SKIP)
+
+
+def probe_language(hear, total):
+    """Язык записи по пробному куску. hear(с какой секунды) возвращает распознанный там текст.
+    Если после отступа речи не оказалось — слушаем с самого начала; нет и там — считаем запись русской."""
+    start = probe_start(total)
+    return guess_language(hear(start)) or (start and guess_language(hear(0))) or "ru"
 
 
 def threads_for(cpus):
@@ -191,9 +207,12 @@ def duration_of(media):
         return 0
 
 
-def read_audio(media, limit=None):
-    """Звук из любого аудио или видео — порциями по 10 секунд, 16 кГц моно. limit — взять только первые секунды."""
-    cmd = [str(Path(FFMPEG_DIR) / "ffmpeg"), "-nostdin", "-v", "error", "-i", str(media)]
+def read_audio(media, limit=None, start=0):
+    """Звук из любого аудио или видео — порциями по 10 секунд, 16 кГц моно.
+    start — с какой секунды читать, limit — сколько секунд взять."""
+    cmd = [str(Path(FFMPEG_DIR) / "ffmpeg"), "-nostdin", "-v", "error"]
+    cmd += ["-ss", str(start)] if start else []  # до «-i»: ffmpeg перескакивает к месту, а не читает всё до него
+    cmd += ["-i", str(media)]
     cmd += ["-t", str(limit)] if limit else []
     # Сообщения ffmpeg — во временный файл, а не в трубу: на битой записи их тысячи, труба переполняется,
     # ffmpeg встаёт на записи, мы — на чтении звука, и распознавание висит вечно.
@@ -215,11 +234,13 @@ def read_audio(media, limit=None):
             ff.stdout.close()
 
 
-def speech_pieces(media, vad_path, limit=None, should_stop=lambda: False):
-    """Куски с речью: (начало в секундах, отсчёты). Тишина и музыка без голоса в них не попадают."""
+def speech_pieces(media, vad_path, limit=None, should_stop=lambda: False, start=0):
+    """Куски с речью: (начало в секундах, отсчёты). Тишина и музыка без голоса в них не попадают.
+    start и limit — слушать только отрезок записи (время кусков тогда считается от его начала)."""
     import sherpa_onnx
     cfg = sherpa_onnx.VadModelConfig()
     cfg.silero_vad.model = vad_path
+    cfg.silero_vad.threshold = VAD_THRESHOLD
     cfg.silero_vad.min_silence_duration = 0.4
     cfg.silero_vad.window_size = VAD_WINDOW  # для детектора v5/v6 обязателен именно такой размер
     cfg.silero_vad.max_speech_duration = MAX_PIECE
@@ -232,7 +253,7 @@ def speech_pieces(media, vad_path, limit=None, should_stop=lambda: False):
             vad.pop()
 
     rest = array("f")
-    for chunk in read_audio(media, limit):
+    for chunk in read_audio(media, limit, start):
         if should_stop():
             raise Cancelled("распознавание прервано")
         rest.extend(chunk)
@@ -288,19 +309,23 @@ def unload_later():
     _unload_timer.start()
 
 
-def detect_model(media, language, vad_path, on_progress, should_stop):
-    """Какой моделью распознавать запись. При «авто» слушаем начало многоязычной моделью:
+def detect_model(media, language, total, vad_path, on_progress, should_stop):
+    """Какой моделью распознавать запись. При «авто» слушаем кусок многоязычной моделью:
     русскую речь она пишет кириллицей — тогда берём русскую модель, она на русском точнее."""
     if language in ("ru", "multi"):
         return language
     rec = recognizer("multi", on_progress, should_stop)
-    heard, sample = 0.0, []
-    for _start, samples in speech_pieces(media, vad_path, limit=180, should_stop=should_stop):
-        sample.append(recognize(rec, samples))
-        heard += len(samples) / RATE
-        if heard >= SAMPLE_SPEECH:
-            break
-    return pick_model("auto", " ".join(sample))
+
+    def hear(start):
+        heard, sample = 0.0, []
+        for _at, samples in speech_pieces(media, vad_path, limit=180, should_stop=should_stop, start=start):
+            sample.append(recognize(rec, samples))
+            heard += len(samples) / RATE
+            if heard >= SAMPLE_SPEECH:
+                break
+        return " ".join(sample)
+
+    return probe_language(hear, total)
 
 
 def wait_turn(on_stage, should_stop):
@@ -330,9 +355,9 @@ def transcribe(media, language="auto", on_stage=lambda stage, percent: None, sho
     wait_turn(on_stage, should_stop)
     try:
         vad_path = ensure_vad(loading, should_stop)
-        name = detect_model(media, language, vad_path, loading, should_stop)
-        rec = recognizer(name, loading, should_stop)
         total = duration_of(media)
+        name = detect_model(media, language, total, vad_path, loading, should_stop)
+        rec = recognizer(name, loading, should_stop)
         on_stage("распознавание", 0)
         pieces = []
         for start, samples in merge_pieces(speech_pieces(media, vad_path, should_stop=should_stop)):
