@@ -1,4 +1,5 @@
 """Лог одной задачи: отдельный файл на каждую загрузку, вывод yt-dlp, cookies без значений."""
+import contextlib
 import logging
 from datetime import datetime
 
@@ -18,6 +19,17 @@ def job_logger(job_id):
         with lock:
             jobs[job_id]["log_file"] = str(path)
     return lg
+
+
+KEEP_LOGS = 200  # столько последних логов задач храним: хватает, чтобы разобраться в недавнем сбое
+
+
+def drop_old_logs(folder, keep=KEEP_LOGS):
+    """Удалить старые логи задач (при старте). Имя файла начинается с даты и времени, поэтому порядок имён —
+    это порядок по времени. Чужие файлы в папке не трогаем."""
+    for old in sorted(folder.glob("*.log"))[:-keep]:
+        with contextlib.suppress(OSError):  # занят или уже удалён — попробуем при следующем запуске
+            old.unlink()
 
 
 def close_job_logger(job_id):

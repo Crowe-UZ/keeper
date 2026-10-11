@@ -11,7 +11,7 @@ from unittest import mock
 
 import yt_dlp
 
-from kachalka import api, download, files, outputs
+from kachalka import api, download, files, joblog, outputs
 from kachalka.models import Cancelled
 from kachalka.system import FFMPEG_DIR
 
@@ -81,6 +81,34 @@ class Folder(unittest.TestCase):
 
     def test_folder_that_does_not_exist(self):
         self.assertFalse(files.writable(Path(tempfile.gettempdir()) / "keeper-no-such-folder" / "x"))
+
+
+class OldLogs(unittest.TestCase):
+    def test_only_the_newest_job_logs_are_kept(self):
+        # отдельный файл на каждую загрузку: за год их набирались тысячи
+        with tempfile.TemporaryDirectory() as d:
+            for n in range(30):
+                (Path(d) / f"2026-01-{n + 1:02d}_00-00-00_job{n}.log").write_text("x")
+            (Path(d) / "notes.txt").write_text("x")  # не наш файл
+            joblog.drop_old_logs(Path(d), keep=10)
+            left = sorted(p.name for p in Path(d).iterdir())
+            self.assertEqual(len(left), 11)
+            self.assertIn("notes.txt", left)
+            self.assertIn("2026-01-30_00-00-00_job29.log", left)   # самые свежие на месте
+            self.assertNotIn("2026-01-01_00-00-00_job0.log", left)
+
+
+class Secrets(unittest.TestCase):
+    def test_cookies_leave_memory_when_the_job_is_done(self):
+        job = {"status": "готово", "cookies": [{"name": "sid", "value": "secret"}], "headers": {"Cookie": "sid=secret"}}
+        download.forget_secrets(job)
+        self.assertEqual((job["cookies"], job["headers"]), ([], {}))
+
+    def test_cookies_stay_while_the_job_can_still_be_retried(self):
+        for status in ("ошибка", "отменено"):
+            job = {"status": status, "cookies": [{"name": "sid", "value": "secret"}], "headers": {"Referer": "x"}}
+            download.forget_secrets(job)
+            self.assertEqual(len(job["cookies"]), 1)  # «Повторить» без них не скачает закрытое видео
 
 
 class ChooseFolder(unittest.TestCase):

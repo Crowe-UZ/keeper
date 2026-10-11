@@ -374,7 +374,15 @@ def conclude(job_id, job, outcome, cookie_file, names, started, lg):
             remove_parts(job["save_dir"], names)
             job.pop("templates", None)  # имя свободно: при «Повторить» оно подбирается заново
         close_job_logger(job_id)
+        forget_secrets(job)
         release(job_id, job)  # в самом конце: до этого «Повторить» ждёт, а «Убрать готовые» задачу не трогает
+
+
+def forget_secrets(job):
+    """Готовой задаче cookies и заголовки вкладки больше не нужны — не держим их в памяти до закрытия программы.
+    У неудавшейся и отменённой остаются: без них «Повторить» не скачает закрытое видео."""
+    if job["status"].startswith("готово"):
+        job["cookies"], job["headers"] = [], {}
 
 
 def clean_after(job, outcome):
