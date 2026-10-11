@@ -1,9 +1,10 @@
 """Распознавание речи в аудио и видео — локально, без интернета (кроме первой загрузки модели).
 
 Как устроено: ffmpeg отдаёт звук потоком -> детектор речи (VAD) режет его на куски по паузам ->
-каждый кусок распознаёт модель -> куски собираются в текст с абзацами.
+соседние куски склеиваются в отрезки до 22 секунд -> отрезок распознаёт модель -> текст собирается абзацами.
 Русскую речь распознаёт GigaAM v3, английскую и другие европейские — Parakeet v3 (см. models.py).
 """
+import os
 import re
 import subprocess
 import tempfile
@@ -21,23 +22,36 @@ MAX_PIECE = 20  # секунд: длиннее модели распознают
 SAMPLE_SPEECH = 20  # секунд речи, по которым определяем язык
 PARAGRAPH_PAUSE = 1.5  # секунд тишины между кусками — и начинается новый абзац
 PARAGRAPH_CHARS = 700  # абзац длиннее этого закрываем на ближайшем конце предложения
+PARAGRAPH_LIMIT = 1500  # а длиннее этого — на любом стыке: сплошная речь без точек не должна быть одним абзацем
+MAX_CHUNK = 22  # секунд: соседние куски речи склеиваем до такой длины (так советуют авторы GigaAM)
+TOO_LONG = 28  # секунд: кусок длиннее делим на части — модели на такую длину не рассчитаны
+PAD = 0.3  # секунд тишины оставляем между склеенными кусками
+FORCED_CUT = 0.25  # секунд: стык без паузы — значит фразу разрезали принудительно, а не на её конце
+TOO_SHORT = 0.6  # секунд: одинокий звук короче этого не распознаём — слов в нём нет
+UNLOAD_AFTER = 300  # секунд без распознавания — и модель выгружается из памяти (это 0,3–0,9 ГБ)
+SENTENCE_END = (".", "!", "?", "…")
+FILLERS = {"м", "мм", "ммм", "мммм", "угу", "ага", "а", "э", "эм", "хм", "hm", "hmm", "mm", "mmm", "mmmm", "mhm",
+           "yeah", "uh", "um", "oh", "ah"}
 
 one_at_a_time = threading.Lock()  # распознавание занимает все ядра: два сразу только мешали бы друг другу
 _loaded = {}  # имя модели -> распознаватель; держим один, чтобы не занимать память двумя
+_unload_timer = None  # таймер выгрузки модели после простоя
 
 
 def guess_language(text):
     """«ru» — русская речь, «multi» — любая другая; None — слов нет, судить не по чему.
     Считаем слова, а не буквы: в русской лекции бывает много английских терминов, и они длинные.
     В английской речи кириллических слов нет вовсе, поэтому трети кириллицы достаточно, чтобы счесть речь русской.
-    Украинскую (буквы і, ї, є, ґ) русской не считаем — её умеет многоязычная модель."""
+    Другую кириллицу русской не считаем — её умеет многоязычная модель: украинскую узнаём по буквам і, ї, є, ґ,
+    болгарскую — по тому, что в длинном куске нет ни одной из букв ы, э, ё."""
     low = text.lower()
     cyr = len(re.findall(r"[а-яёіїєґ]+", low))
     lat = len(re.findall(r"[a-z]+", low))
     if not cyr and not lat:
         return None
     ukrainian = len(re.findall(r"[іїєґ]", low)) > 2
-    return "ru" if cyr * 3 >= cyr + lat and not ukrainian else "multi"
+    bulgarian = cyr >= 15 and not re.search(r"[ыэё]", low)
+    return "ru" if cyr * 3 >= cyr + lat and not ukrainian and not bulgarian else "multi"
 
 
 def pick_model(language, sample_text):
@@ -47,20 +61,70 @@ def pick_model(language, sample_text):
     return guess_language(sample_text) or "ru"
 
 
+def threads_for(cpus):
+    """Сколько потоков дать модели: половина логических ядер, но не больше четырёх. На 12 потоках замер дал
+    13× реального времени против 21× на четырёх; на двухъядерном ноутбуке четыре потока заняли бы всё."""
+    return max(1, min(4, (cpus or 4) // 2))
+
+
+def merge_pieces(pieces):
+    """Склеить соседние куски речи в отрезки до MAX_CHUNK секунд. Детектор режет по каждой паузе, и в лекции
+    выходят куски по 2–8 секунд; модели же готовили на отрезках по 15–22 секунды. На каждой лишней границе
+    появлялись оборванное слово, лишняя точка и заглавная буква. Паузу между склеенными кусками сжимаем до PAD."""
+    start, buffer, end = None, None, None
+    for piece_start, samples in pieces:
+        length = len(samples) / RATE
+        if buffer is not None:
+            gap = max(0.0, piece_start - end)
+            pad = min(gap, PAD)
+            if gap <= PARAGRAPH_PAUSE and len(buffer) / RATE + pad + length <= MAX_CHUNK:
+                buffer.extend([0.0] * int(pad * RATE))
+                buffer.extend(samples)
+                end = piece_start + length
+                continue
+            yield start, buffer
+        start, buffer, end = piece_start, list(samples), piece_start + length
+    if buffer is not None:
+        yield start, buffer
+
+
+def split_long(samples):
+    """Слишком длинный кусок (пение, речь поверх музыки: детектор не нашёл паузы) поделить на равные части
+    не длиннее MAX_PIECE секунд. Обычный кусок возвращается как есть."""
+    if len(samples) <= TOO_LONG * RATE:
+        return [samples]
+    parts = -(-len(samples) // (MAX_PIECE * RATE))  # деление с округлением вверх
+    size = -(-len(samples) // parts)
+    return [samples[i:i + size] for i in range(0, len(samples), size)]
+
+
+def is_filler(text, seconds):
+    """Одинокий короткий звук, принятый за слово: «Mmm.», «Угу.», «Yeah.». Так модели отвечают на вздох, щелчок
+    или ноту. Внутри длинной речи такие слова не трогаем — там они настоящие."""
+    return seconds < 1.5 and re.sub(r"[^a-zа-яё]", "", text.lower()) in FILLERS
+
+
 def to_text(pieces):
-    """Куски (начало, длительность, текст) -> текст абзацами: абзац кончается на долгой паузе
-    или, если вырос слишком большим, на ближайшем конце предложения."""
+    """Куски (начало, длительность, текст) -> текст абзацами. Абзац кончается на долгой паузе; если вырос
+    слишком большим — на ближайшем конце предложения, а если концов предложений нет вовсе — на любом стыке.
+    Кусок, который идёт вплотную за оборванной фразой, не начинает новое предложение с заглавной буквы."""
     paragraphs, current, last_end = [], [], None
     for start, duration, text in pieces:
         text = text.strip()
         if not text:
             continue
         size = sum(len(t) + 1 for t in current)
-        paused = last_end is not None and start - last_end > PARAGRAPH_PAUSE
-        too_long = size > PARAGRAPH_CHARS and current[-1].endswith((".", "!", "?", "…"))
+        gap = None if last_end is None else start - last_end
+        ended = bool(current) and current[-1].endswith(SENTENCE_END)
+        paused = gap is not None and gap > PARAGRAPH_PAUSE
+        too_long = (size > PARAGRAPH_CHARS and ended) or size > PARAGRAPH_LIMIT
         if current and (paused or too_long):
             paragraphs.append(" ".join(current))
             current = []
+        elif current and not ended and gap is not None and gap < FORCED_CUT:
+            first = text.split()[0]
+            if not (len(first.strip(".,!?…:;")) > 1 and first.isupper()):  # сокращение заглавными (JTBD) оставляем как есть
+                text = text[0].lower() + text[1:]
         current.append(text)
         last_end = start + duration
     if current:
@@ -108,6 +172,7 @@ def speech_pieces(media, vad_path, limit=None, should_stop=lambda: False):
     cfg = sherpa_onnx.VadModelConfig()
     cfg.silero_vad.model = vad_path
     cfg.silero_vad.min_silence_duration = 0.4
+    cfg.silero_vad.window_size = VAD_WINDOW  # для детектора v5/v6 обязателен именно такой размер
     cfg.silero_vad.max_speech_duration = MAX_PIECE
     cfg.sample_rate = RATE
     vad = sherpa_onnx.VoiceActivityDetector(cfg, buffer_size_in_seconds=120)
@@ -140,15 +205,38 @@ def recognizer(name, on_progress, should_stop):
         _loaded.clear()
         _loaded[name] = sherpa_onnx.OfflineRecognizer.from_transducer(
             encoder=files["encoder"], decoder=files["decoder"], joiner=files["joiner"], tokens=files["tokens"],
-            num_threads=4, model_type="nemo_transducer", decoding_method="greedy_search")
+            num_threads=threads_for(os.cpu_count()), model_type="nemo_transducer", decoding_method="greedy_search")
     return _loaded[name]
 
 
 def recognize(rec, samples):
-    stream = rec.create_stream()
-    stream.accept_waveform(RATE, samples)
-    rec.decode_stream(stream)
-    return stream.result.text.strip()
+    """Текст одного отрезка речи. Слишком длинный отрезок распознаётся по частям."""
+    texts = []
+    for part in split_long(samples):
+        stream = rec.create_stream()
+        stream.accept_waveform(RATE, part)
+        rec.decode_stream(stream)
+        texts.append(stream.result.text.strip())
+    return " ".join(t for t in texts if t)
+
+
+def unload_later():
+    """Выгрузить модель из памяти, если распознавания не было UNLOAD_AFTER секунд. Программа висит в трее часами,
+    и держать всё это время 0,3–0,9 ГБ незачем: загрузка модели заново занимает секунду-две."""
+    global _unload_timer
+    if _unload_timer:
+        _unload_timer.cancel()
+
+    def unload():
+        if one_at_a_time.acquire(blocking=False):  # идёт распознавание — не трогаем, таймер взведут заново
+            try:
+                _loaded.clear()
+            finally:
+                one_at_a_time.release()
+
+    _unload_timer = threading.Timer(UNLOAD_AFTER, unload)
+    _unload_timer.daemon = True
+    _unload_timer.start()
 
 
 def detect_model(media, language, vad_path, on_progress, should_stop):
@@ -197,11 +285,16 @@ def transcribe(media, language="auto", on_stage=lambda stage, percent: None, sho
         total = duration_of(media)
         on_stage("распознавание", 0)
         pieces = []
-        for start, samples in speech_pieces(media, vad_path, should_stop=should_stop):
+        for start, samples in merge_pieces(speech_pieces(media, vad_path, should_stop=should_stop)):
             length = len(samples) / RATE
-            pieces.append((start, length, recognize(rec, samples)))
+            text = recognize(rec, samples) if length >= TOO_SHORT else ""
+            if text and not is_filler(text, length):
+                pieces.append((start, length, text))
             on_stage("распознавание", round(min(99.0, (start + length) * 100 / total), 1) if total else 0)
     finally:
         one_at_a_time.release()
+        unload_later()
+    if total > 30 and sum(len(text.split()) for _, _, text in pieces) < 3:
+        pieces = []  # одно-два слова на всю длинную запись — это не речь, а случайный звук
     log.debug(f"распознано кусков: {len(pieces)}, модель {name}, файл {Path(media).name}")
     return to_text(pieces), name

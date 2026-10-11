@@ -24,7 +24,11 @@ MODELS = {
               "dir": "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
               "sha256": "5793d0fd397c5778d2cf2126994d58e9d56b1be7c04d13c7a15bb1b4eafb16bf"},
 }
-VAD_FILE = "silero_vad.onnx"  # находит в записи куски с речью — по ним режем длинное аудио
+# Детектор речи Silero v6 (лицензия MIT): находит в записи куски с речью — по ним режем длинное аудио.
+# Раньше брался v4 из набора sherpa-onnx; v6 заметно лучше отличает шум и музыку от голоса (данные авторов).
+VAD_FILE = "silero_vad_v6.onnx"
+VAD_URL = "https://github.com/snakers4/silero-vad/raw/v6.2.3/src/silero_vad/data/silero_vad.onnx"
+VAD_SHA256 = "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"  # сверено скачиванием 2026-10-11
 TRIES = 3  # сколько раз продолжать загрузку после обрыва связи
 
 
@@ -97,7 +101,10 @@ def ensure_vad(on_progress=lambda p: None, should_stop=lambda: False):
     path = MODELS_DIR / VAD_FILE
     if not path.exists():
         MODELS_DIR.mkdir(exist_ok=True)
-        _fetch(_BASE + VAD_FILE, path, on_progress, should_stop)
+        _fetch(VAD_URL, path, on_progress, should_stop)
+        if not checksum_ok(path, VAD_SHA256):
+            path.unlink()
+            raise RuntimeError("Детектор речи скачался с ошибкой (не сошлась контрольная сумма). Нажми «Повторить».")
     return str(path)
 
 

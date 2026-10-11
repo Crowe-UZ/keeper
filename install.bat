@@ -38,7 +38,7 @@ if not exist .venv\Scripts\python.exe (
 
 rem --- 3. Libraries ---------------------------------------------------------------------------------
 echo Installing libraries (needs internet, takes a minute)...
-.venv\Scripts\python.exe -m pip install -U -q "yt-dlp[default]" pystray pillow sherpa-onnx
+.venv\Scripts\python.exe -m pip install -U -q "yt-dlp[default]" pystray pillow sherpa-onnx==1.13.8
 if errorlevel 1 (
   echo ERROR: could not download the libraries. Check the internet connection and run install.bat again.
   goto :fail

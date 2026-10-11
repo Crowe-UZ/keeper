@@ -11,6 +11,8 @@ ignore_names = [
     "PickFormat", "JobKind", "PlanAttempts", "Texts", "Names", "Probe", "SameVideo", "Routes",
     "Language", "Text", "WhatToDownload", "FileNames",
     "TextAhead", "Connections", "TempFolder", "Toast",
+    "ParseJob", "Claim", "Ready", "Checksum", "Resume", "Merge", "Split", "Noise", "Joins", "Russian", "Threads",
+    "window_size",  # ещё одно поле настроек детектора речи sherpa-onnx
     # настройки детектора речи: это поля чужого объекта sherpa-onnx, мы их только задаём
     "min_silence_duration", "max_speech_duration",
 ]

@@ -1,4 +1,6 @@
 """Решения, которые принимает качалка до и после самого скачивания: формат, попытки, тексты ошибок."""
+import logging
+import tempfile
 import unittest
 
 from kachalka import download
@@ -60,6 +62,16 @@ class Connections(unittest.TestCase):
 
     def test_pause_before_retry_grows_but_stays_short(self):
         self.assertEqual([download.retry_pause(n) for n in (1, 2, 3, 6)], [2, 4, 8, 10])
+
+    def test_pause_is_called_the_way_yt_dlp_calls_it(self):
+        # yt-dlp зовёт функцию паузы с именованным аргументом n — другое имя роняло загрузку при первом же обрыве куска
+        self.assertEqual(download.retry_pause(n=2), 4)
+        job = {"mode": "video", "max_height": 0, "sniffed": True, "url": "https://e.com/v.m3u8", "title": "t",
+               "save_dir": tempfile.gettempdir(), "headers": {}, "want": ["video"]}
+        pause = download.build_opts("x", job, None, logging.getLogger("t"))["retry_sleep_functions"]["fragment"]
+        self.assertEqual(pause(n=1), 2)
+        job["cancel"] = True
+        self.assertEqual(pause(n=5), 0)  # после «Отмены» ждать незачем
 
 
 class TextAhead(unittest.TestCase):

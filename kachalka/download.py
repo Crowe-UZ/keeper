@@ -99,19 +99,20 @@ def fragments_for(active):
     return max(4, 16 // max(1, active))
 
 
-def retry_pause(attempt):
-    """Пауза перед повтором оборвавшегося куска, секунд: растёт, но остаётся короткой."""
-    return min(2 ** attempt, 10)
+def retry_pause(n):
+    """Пауза перед повтором оборвавшегося куска, секунд: растёт, но остаётся короткой.
+    Имя аргумента — n: yt-dlp передаёт номер попытки именно под этим именем."""
+    return min(2 ** n, 10)
 
 
 def build_opts(job_id, job, cookie_file, lg):
     tmp = temp_dir(job["save_dir"])
     private = job["sniffed"] or job_kind(job["url"]) != "page"
 
-    def pause(attempt):
+    def pause(n):  # имя аргумента задаёт yt-dlp: он зовёт pause(n=номер попытки)
         # после «Отмены» потоки загрузки не должны спать перед повтором: пока они живы, недокачанный файл занят,
         # его не удалить, и «Повторить» получил бы имя с «(2)»
-        return 0 if job.get("cancel") or stopping.is_set() else retry_pause(attempt)
+        return 0 if job.get("cancel") or stopping.is_set() else retry_pause(n)
 
     opts = {
         "outtmpl": unique_template(job["title"], job["save_dir"]) if job["sniffed"] else "%(title).150B [%(id)s].%(ext)s",
