@@ -4,3 +4,7 @@ models/
 tests/e2e/node_modules/
 # Тестовое видео, которое создаёт сквозной тест
 tests/e2e/site/gen/
+installer/stage/
+installer/cache/
+installer/out/
+installer/art/
