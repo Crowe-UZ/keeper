@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -16,6 +17,7 @@ from .joblog import YtdlpLog, close_job_logger, job_logger, redact_cookies
 from .notify import toast
 from .outputs import make_outputs, want_label
 from .system import FFMPEG_DIR, JS_RUNTIMES, environment
+from .textahead import TEXT_FORMAT, TextAhead
 
 
 def friendly_error(msg):
@@ -66,7 +68,7 @@ def pick_format(mode, max_height, has_ffmpeg):
     если такого разрешения у видео нет — берём лучшее, что есть."""
     cap = f"[height<={max_height}]" if max_height else ""
     if mode == "text":
-        return {"format": "bestaudio/best"}  # звук как есть: он временный, перекодировать незачем
+        return {"format": TEXT_FORMAT}  # самый лёгкий звук как есть: он временный, перекодировать незачем
     if mode == "audio":
         mp3 = {"postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "0"}]}
         return {"format": "bestaudio/best", **(mp3 if has_ffmpeg else {})}
@@ -119,6 +121,12 @@ def plan_attempts(job, kind, cookie_file):
     if job["sniffed"] or kind != "page":
         return [cookie_file]
     return [None, cookie_file] if cookie_file else [None]
+
+
+def text_ahead(job, kind):
+    """Распознавать ли текст параллельно со скачиванием видео: нужно и то и другое, и видео одно
+    (на странице урока с несколькими плеерами — по очереди, как раньше)."""
+    return job["mode"] == "video" and "text" in job["want"] and kind != "lesson"
 
 
 def log_start(job_id, job, lg):
@@ -181,12 +189,12 @@ def download_infos(ydl, job_id, job, infos, named, names, lg):
     return results
 
 
-def finish_result(job_id, job, result, stem, lg):
+def finish_result(job_id, job, result, stem, lg, ahead=None):
     """Довести одно скачанное видео до того, что просили. Возвращает (главный файл или None, описание для окна)."""
     path = ((result.get("requested_downloads") or [{}])[0].get("filepath")) or result.get("filepath")
     if not path or not os.path.exists(path):
         raise RuntimeError("yt-dlp сообщил об успехе, но скачанного файла нет на месте.")
-    files, note = make_outputs(job_id, job, Path(path), stem, lg)
+    files, note = make_outputs(job_id, job, Path(path), stem, lg, ahead)
     about = []
     if job["mode"] != "text":  # временную звуковую дорожку описывать незачем — её уже не будет
         p = probe(path)
@@ -200,8 +208,8 @@ def finish_result(job_id, job, result, stem, lg):
     return main, " · ".join(x for x in [*about, note] if x)
 
 
-def finish_ok(job_id, job, results, started, lg):
-    done = [finish_result(job_id, job, result, stem, lg) for result, stem in results]
+def finish_ok(job_id, job, results, ahead, started, lg):
+    done = [finish_result(job_id, job, result, stem, lg, ahead) for result, stem in results]
     first = str(done[0][0]) if done and done[0][0] else None
     parts = f" ({len(done)} видео)" if len(done) > 1 else ""
     update(job_id, status="готово" + parts, percent=100, speed="", eta=None, file=first, quality=done[0][1] if done else "")
@@ -227,15 +235,24 @@ def finish_failed(job_id, job, error, lg):
 
 
 def attempt(job_id, job, kind, cookie_file, names, lg):
-    """Одна попытка скачать задачу — с заданными cookies или без них. Возвращает то, что скачалось."""
+    """Одна попытка скачать задачу — с заданными cookies или без них.
+    Возвращает (что скачалось, параллельное распознавание текста или None)."""
     update(job_id, status="подготовка", error=None)
-    with yt_dlp.YoutubeDL(build_opts(job_id, job, cookie_file, lg)) as ydl:
-        infos = extract_infos(ydl, job, kind, lg)
-        named = job["sniffed"] or kind != "page"
-        results = download_infos(ydl, job_id, job, infos, named, names, lg)
+    ahead = None
+    if text_ahead(job, kind):
+        ahead = TextAhead(job_id, job, cookie_file, lambda ydl: extract_infos(ydl, job, kind, lg)[0], lg)
+    try:
+        with yt_dlp.YoutubeDL(build_opts(job_id, job, cookie_file, lg)) as ydl:
+            infos = extract_infos(ydl, job, kind, lg)
+            named = job["sniffed"] or kind != "page"
+            results = download_infos(ydl, job_id, job, infos, named, names, lg)
+    except BaseException:
+        if ahead:
+            ahead.drop()  # видео не скачалось — его текст в этой попытке не нужен
+        raise
     if job["mode"] != "text":
         names.clear()  # всё докачано — убирать нечего; временную звуковую дорожку уберём после распознавания
-    return results
+    return results, ahead
 
 
 def run_attempts(job_id, job, cookie_file, names, lg):
@@ -252,6 +269,23 @@ def run_attempts(job_id, job, cookie_file, names, lg):
             log.info(f"[{job_id}] без cookies не вышло, пробую с cookies")
 
 
+def conclude(job_id, job, outcome, cookie_file, names, started, lg):
+    """Довести задачу до конца: звук из видео, текст, итоговый статус и уборка. outcome — что вернуло скачивание
+    либо исключение, которым оно кончилось."""
+    try:
+        if isinstance(outcome, BaseException):
+            raise outcome
+        results, ahead = outcome
+        finish_ok(job_id, job, results, ahead, started, lg)  # уже без повторных попыток скачивания
+    except Exception as e:  # noqa: BLE001 — yt-dlp и сайты бросают что угодно; любой сбой задачи становится её статусом и записью в лог
+        finish_failed(job_id, job, e, lg)
+    finally:
+        if cookie_file:
+            os.unlink(cookie_file)
+        remove_parts(job["save_dir"], names)
+        close_job_logger(job_id)
+
+
 def run_download(job_id):
     job = jobs[job_id]
     lg = job_logger(job_id)
@@ -260,15 +294,15 @@ def run_download(job_id):
     cookie_file = write_cookies(job["cookies"])
     names = []  # имена файлов, которые мы сами назначили: по ним в конце убираем недокачанное и временное
     try:
-        results = run_attempts(job_id, job, cookie_file, names, lg)
-        finish_ok(job_id, job, results, started, lg)  # звук из видео и распознавание — уже без повторных попыток скачивания
-    except Exception as e:  # noqa: BLE001 — yt-dlp и сайты бросают что угодно; любой сбой задачи становится её статусом и записью в лог
-        finish_failed(job_id, job, e, lg)
-    finally:
-        if cookie_file:
-            os.unlink(cookie_file)
-        remove_parts(job["save_dir"], names)
-        close_job_logger(job_id)
+        outcome = run_attempts(job_id, job, cookie_file, names, lg)
+    except Exception as e:  # noqa: BLE001 — причину разберёт conclude: она станет статусом задачи и записью в лог
+        outcome = e
+    finish = (job_id, job, outcome, cookie_file, names, started, lg)
+    if "text" in job["want"] and not isinstance(outcome, BaseException):
+        # распознавание идёт своим потоком: место в очереди загрузок освобождается для следующего видео
+        threading.Thread(target=conclude, args=finish, daemon=True).start()
+    else:
+        conclude(*finish)
 
 
 def fmt_eta(sec):

@@ -26,8 +26,23 @@ class PickFormat(unittest.TestCase):
         self.assertEqual(download.pick_format("audio", 0, has_ffmpeg=False), {"format": "bestaudio/best"})
 
 
-    def test_text_only_takes_the_sound_track_as_is(self):
-        self.assertEqual(download.pick_format("text", 720, has_ffmpeg=True), {"format": "bestaudio/best"})
+    def test_text_only_takes_the_lightest_sound_source(self):
+        # отдельная звуковая дорожка, а если её нет (звук вшит в видео) — самый лёгкий вариант видео, а не самый тяжёлый
+        self.assertEqual(download.pick_format("text", 720, has_ffmpeg=True), {"format": "ba/w"})
+
+
+class TextAhead(unittest.TestCase):
+    def test_video_plus_text_recognises_in_parallel(self):
+        self.assertTrue(download.text_ahead({"mode": "video", "want": ["video", "text"]}, "page"))
+        self.assertTrue(download.text_ahead({"mode": "video", "want": ["video", "audio", "text"]}, "player"))
+
+    def test_nothing_to_run_in_parallel_without_video_or_without_text(self):
+        self.assertFalse(download.text_ahead({"mode": "video", "want": ["video"]}, "page"))
+        self.assertFalse(download.text_ahead({"mode": "audio", "want": ["audio", "text"]}, "page"))
+        self.assertFalse(download.text_ahead({"mode": "text", "want": ["text"]}, "page"))
+
+    def test_lesson_page_with_several_players_stays_sequential(self):
+        self.assertFalse(download.text_ahead({"mode": "video", "want": ["video", "text"]}, "lesson"))
 
 
 class JobKind(unittest.TestCase):

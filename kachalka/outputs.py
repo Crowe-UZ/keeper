@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .config import NO_WINDOW
 from .state import stopping, update
+from .models import Cancelled
 from .system import FFMPEG_DIR
 from .transcribe import transcribe
 
@@ -50,13 +51,26 @@ def extract_mp3(media, dest):
         raise RuntimeError("ffmpeg не смог вынуть звук из видео: " + r.stderr.strip()[-300:])
 
 
-def make_text(job_id, job, media, stem, lg):
-    """Распознать речь и сохранить текст рядом с остальными файлами. Возвращает (путь или None, пояснение)."""
+def recognise(job_id, job, media, ahead, lg):
+    """Текст записи: из параллельного прохода, если он был и удался, иначе — распознаём скачанный файл."""
+    if ahead:
+        try:
+            return ahead.wait()
+        except Cancelled:
+            raise
+        except Exception as e:  # noqa: BLE001 — параллельный путь необязателен: любая его неудача записана и заменяется обычным путём
+            lg.warning(f"параллельное распознавание не удалось ({e!r}) — распознаю из скачанного файла")
+
     def stage(name, percent):
         if not job.get("cancel"):  # после «Отмены» статус уже «отмена…» — не затираем его
             update(job_id, status=name, percent=percent, speed="", eta=None)
 
-    text, model = transcribe(media, job["language"], stage, lambda: job.get("cancel") or stopping.is_set())
+    return transcribe(media, job["language"], stage, lambda: job.get("cancel") or stopping.is_set())
+
+
+def make_text(job_id, job, media, stem, lg, ahead=None):
+    """Распознать речь и сохранить текст рядом с остальными файлами. Возвращает (путь или None, пояснение)."""
+    text, model = recognise(job_id, job, media, ahead, lg)
     if not text.strip():
         lg.info(f"распознавание ({model}): речь не найдена")
         return None, "речь не найдена"
@@ -67,7 +81,7 @@ def make_text(job_id, job, media, stem, lg):
     return path, f"текст: {words} слов"
 
 
-def make_outputs(job_id, job, media, stem, lg):
+def make_outputs(job_id, job, media, stem, lg, ahead=None):
     """Из скачанного файла сделать всё, что просили. media — что скачалось; stem — имя для текста,
     когда скачивалась только временная звуковая дорожка. Возвращает ({вид: путь}, пояснение про текст)."""
     want, mode = job["want"], download_mode(job["want"])
@@ -80,7 +94,7 @@ def make_outputs(job_id, job, media, stem, lg):
         extract_mp3(media, files["audio"])
         lg.info(f"звук из видео: {files['audio']}")
     if "text" in want:
-        path, note = make_text(job_id, job, media, stem or media.stem, lg)
+        path, note = make_text(job_id, job, media, stem or media.stem, lg, ahead)
         if path:
             files["text"] = path
     return files, note
