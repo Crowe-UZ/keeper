@@ -88,7 +88,7 @@ try {
   check("видео 2: заголовка нет -> «Видео 2»", cards[1]?.name === "Видео 2", cards[1]?.name);
   check("превью-кадры есть", cards.every((c) => c.thumb));
   check("длительность и «играет»", cards.every((c) => /\d:\d\d/.test(c.meta) && c.meta.includes("играет")), cards.map((c) => c.meta).join(" | "));
-  check("для каждого видео выбран мастер-плейлист", cards.every((c) => c.meta.includes("все качества")));
+  check("в строке видео нет технических слов", cards.every((c) => !/HLS|DASH|качеств/.test(c.meta)), cards.map((c) => c.meta).join(" | "));
   check("большая кнопка: скачать все", (await text("#go")) === "⬇ Скачать все (2)", await text("#go"));
   check("по умолчанию отмечено только «Видео»", (await popup.$$eval("#want .chip.on", (c) => c.map((x) => x.dataset.want))).join() === "video");
   await popup.click('#want .chip[data-want="video"]');
@@ -104,6 +104,7 @@ try {
   await sleep(3000);
   check("«Подробнее» остаётся открытым", await popup.$eval("#caught details", (d) => d.open));
   check("в «Подробнее» есть потоки", (await popup.$$("#caught details .item")).length >= 2);
+  check("для каждого видео выбран поток со всеми качествами", (await popup.$$eval("#caught details .tag.best", (t) => t.filter((x) => x.innerText.includes("все качества")).length)) === 2);
 
   // ---- подсветка плеера на странице ----
   await popup.hover('.video[data-n="1"]');
@@ -148,7 +149,7 @@ try {
   // ---- звук ----
   await cardBtn(1, "audio");
   j = await waitJob((x) => x.title.startsWith("🎵") && (x.st.startsWith("готово") || x.st.startsWith("ошибка")));
-  check("«Звук» качает mp3", !!j?.st.startsWith("готово"), j?.st);
+  check("«Звук» даёт звуковой файл", !!j?.st.startsWith("готово"), j?.st);
 
   // ---- сочетание: звук + текст одной задачей (в тестовом ролике речи нет — проверяем, что этап распознавания проходит) ----
   await popup.evaluate(() => document.querySelector('#queue [data-act="/clear"]')?.click());

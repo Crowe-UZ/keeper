@@ -15,7 +15,7 @@ from .windows import open_path
 def status_line():
     s = summary()
     if s["active"] or s["queued"]:
-        return f"Качается: {s['active']} · в очереди: {s['queued']}"
+        return f"В работе: {s['active']} · в очереди: {s['queued']}"
     return "Загрузок нет"
 
 
@@ -27,11 +27,11 @@ def run_tray():
         menu = pystray.Menu(
             pystray.MenuItem(lambda _: status_line(), None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Папка с видео", lambda: open_path(state.save_dir), default=True),
+            pystray.MenuItem("Открыть папку с файлами", lambda: open_path(state.save_dir), default=True),
             pystray.MenuItem("Логи", lambda: open_path(LOG_DIR)),
             pystray.MenuItem("Выход", lambda: shutdown("выход из меню в трее")),
         )
-        state.tray = pystray.Icon("kachalka", Image.open(ICON), "Качалка видео", menu)
+        state.tray = pystray.Icon("kachalka", Image.open(ICON), "Улов", menu)
     except Exception as e:  # noqa: BLE001 — значок необязателен: нет библиотеки, нет иконки, нет рабочего стола — качаем и без него
         return log.warning(f"значок в трее недоступен ({e!r}) — работаю без него")
     threading.Thread(target=tray_status, daemon=True).start()
@@ -45,7 +45,7 @@ def tray_status():
         line = status_line()
         if line != shown:
             shown = line
-            state.tray.title = "Качалка видео — " + line.lower()
+            state.tray.title = "Улов — " + line.lower()
             state.tray.update_menu()
 
 

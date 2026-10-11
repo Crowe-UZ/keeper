@@ -5,30 +5,61 @@ from kachalka import download
 
 
 class PickFormat(unittest.TestCase):
-    def test_video_best_quality_merges_best_video_and_audio(self):
-        self.assertEqual(download.pick_format("video", 0, has_ffmpeg=True)["format"], "bv*+ba/b")
+    def test_video_takes_best_video_and_audio_and_merges_into_mp4(self):
+        got = download.pick_format("video", 0, has_ffmpeg=True)
+        self.assertEqual(got["format"], "bv*+ba/b")
+        self.assertEqual(got["merge_output_format"], "mp4")
 
-    def test_video_is_merged_into_mp4(self):
-        self.assertEqual(download.pick_format("video", 0, has_ffmpeg=True)["merge_output_format"], "mp4")
+    def test_resolution_comes_first_then_codecs_every_player_understands(self):
+        # при равном разрешении — H.264 + AAC: такой mp4 играет везде, а не только в браузере
+        self.assertEqual(download.pick_format("video", 0, has_ffmpeg=True)["format_sort"],
+                         ["res", "fps", "hdr:12", "vcodec:h264", "acodec:m4a"])
 
-    def test_quality_cap_falls_back_to_best_when_nothing_fits(self):
-        self.assertEqual(download.pick_format("video", 720, has_ffmpeg=True)["format"],
-                         "bv*[height<=720]+ba/b[height<=720]/bv*+ba/b")
+    def test_quality_cap_is_a_preference_not_a_filter(self):
+        # «не выше 720», а если такого нет — ближайшее сверху; считается по меньшей стороне, так что вертикальное видео не путает
+        got = download.pick_format("video", 720, has_ffmpeg=True)
+        self.assertEqual(got["format"], "bv*+ba/b")
+        self.assertEqual(got["format_sort"][0], "res:720")
 
     def test_without_ffmpeg_takes_a_ready_file_with_sound(self):
-        self.assertEqual(download.pick_format("video", 0, has_ffmpeg=False), {"format": "b"})
-        self.assertEqual(download.pick_format("video", 480, has_ffmpeg=False), {"format": "b[height<=480]/b"})
+        self.assertEqual(download.pick_format("video", 0, has_ffmpeg=False), {"format": "b", "format_sort": ["res"]})
+        self.assertEqual(download.pick_format("video", 480, has_ffmpeg=False), {"format": "b", "format_sort": ["res:480"]})
 
-    def test_audio_is_converted_to_mp3_only_with_ffmpeg(self):
-        with_ffmpeg = download.pick_format("audio", 720, has_ffmpeg=True)
-        self.assertEqual(with_ffmpeg["format"], "bestaudio/best")
-        self.assertEqual(with_ffmpeg["postprocessors"][0]["preferredcodec"], "mp3")
-        self.assertEqual(download.pick_format("audio", 0, has_ffmpeg=False), {"format": "bestaudio/best"})
+    def test_page_video_gets_title_and_description_written_into_the_file(self):
+        self.assertEqual(download.pick_format("video", 0, has_ffmpeg=True)["postprocessors"][0]["key"], "FFmpegMetadata")
 
+    def test_caught_stream_gets_no_metadata(self):
+        # у пойманного потока «описание» — это служебная ссылка плеера с номером пользователя и его адресом
+        self.assertNotIn("postprocessors", download.pick_format("video", 0, has_ffmpeg=True, private=True))
+
+    def test_audio_prefers_a_separate_track_and_never_the_heaviest_video(self):
+        got = download.pick_format("audio", 720, has_ffmpeg=True)
+        self.assertEqual(got["format"], "ba[acodec^=mp4a]/ba/b[height<=480]/b[height<=720]/w")
+        self.assertEqual(got["postprocessors"][0], {"key": "FFmpegExtractAudio", "preferredcodec": "m4a"})
+
+    def test_audio_without_ffmpeg_is_saved_as_downloaded(self):
+        self.assertNotIn("postprocessors", download.pick_format("audio", 0, has_ffmpeg=False))
 
     def test_text_only_takes_the_lightest_sound_source(self):
-        # отдельная звуковая дорожка, а если её нет (звук вшит в видео) — самый лёгкий вариант видео, а не самый тяжёлый
-        self.assertEqual(download.pick_format("text", 720, has_ffmpeg=True), {"format": "ba/w"})
+        # отдельная лёгкая звуковая дорожка, а если звук вшит в видео — самый лёгкий вариант видео, а не самый тяжёлый
+        self.assertEqual(download.pick_format("text", 720, has_ffmpeg=True), {"format": "ba[abr<=80]/ba/w"})
+
+
+class Connections(unittest.TestCase):
+    def test_one_download_uses_all_sixteen_connections(self):
+        self.assertEqual(download.fragments_for(1), 16)
+        self.assertEqual(download.fragments_for(0), 16)
+
+    def test_parallel_downloads_share_the_budget(self):
+        # три загрузки по 16 соединений к одному серверу кончались обрывами — делим общий запас
+        self.assertEqual(download.fragments_for(2), 8)
+        self.assertEqual(download.fragments_for(3), 5)
+
+    def test_never_fewer_than_four(self):
+        self.assertEqual(download.fragments_for(10), 4)
+
+    def test_pause_before_retry_grows_but_stays_short(self):
+        self.assertEqual([download.retry_pause(n) for n in (1, 2, 3, 6)], [2, 4, 8, 10])
 
 
 class TextAhead(unittest.TestCase):
@@ -73,10 +104,14 @@ class PlanAttempts(unittest.TestCase):
 
 class Texts(unittest.TestCase):
     def test_friendly_error_names_the_cause(self):
-        self.assertIn("DRM", download.friendly_error("This video is DRM protected"))
-        self.assertIn("не нашлось видео", download.friendly_error("ERROR: Unsupported URL: https://x"))
-        self.assertIn("не пустил", download.friendly_error("HTTP Error 403: Forbidden"))
+        self.assertIn("защищено от копирования", download.friendly_error("This video is DRM protected"))
+        self.assertIn("Не нашёл видео", download.friendly_error("ERROR: Unsupported URL: https://x"))
+        self.assertIn("не отдал видео", download.friendly_error("HTTP Error 403: Forbidden"))
         self.assertIn("ffmpeg", download.friendly_error("ffmpeg exited with code 1"))
+
+    def test_our_own_message_about_missing_ffmpeg_is_not_replaced(self):
+        ours = "Для распознавания нужен ffmpeg — он достаёт звук из файла."
+        self.assertEqual(download.friendly_error(ours), ours)
 
     def test_unknown_error_is_passed_through_but_cut(self):
         self.assertEqual(download.friendly_error("x" * 500), "x" * 300)

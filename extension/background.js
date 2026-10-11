@@ -207,8 +207,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
 
 // ---------- меню правой кнопки ----------
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({ id: "dl-link", title: "Скачать видео по ссылке", contexts: ["link", "video"] });
-  chrome.contextMenus.create({ id: "dl-page", title: "Скачать видео с этой вкладки", contexts: ["page"] });
+  chrome.contextMenus.create({ id: "dl-link", title: "Улов: скачать по ссылке", contexts: ["link", "video"] });
+  chrome.contextMenus.create({ id: "dl-page", title: "Улов: скачать с этой вкладки", contexts: ["page"] });
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {

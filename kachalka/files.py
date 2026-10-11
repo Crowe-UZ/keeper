@@ -1,5 +1,6 @@
 """Файлы загрузок: имена, временная папка, cookies для yt-dlp, проверка готового файла."""
 import contextlib
+import os
 import json
 import re
 import shutil
@@ -13,13 +14,30 @@ from .system import FFMPEG_DIR
 
 
 def temp_dir(save_dir):
-    """Куски недокачанных видео — в скрытой подпапке .tmp, чтобы не путать с готовыми."""
-    t = Path(save_dir) / ".tmp"
-    t.mkdir(parents=True, exist_ok=True)
+    """Куски недокачанных видео — в скрытой подпапке .tmp, чтобы не путать с готовыми. У каждой запущенной
+    копии качалки там своя папка (по номеру процесса): иначе вторая копия при старте стирала чужое недокачанное."""
+    hidden = Path(save_dir) / ".tmp"
+    mine = hidden / str(os.getpid())
+    mine.mkdir(parents=True, exist_ok=True)
     with contextlib.suppress(AttributeError, OSError):  # не Windows или нет прав — папка просто останется видимой
         import ctypes
-        ctypes.windll.kernel32.SetFileAttributesW(str(t), 0x2)  # FILE_ATTRIBUTE_HIDDEN
-    return t
+        ctypes.windll.kernel32.SetFileAttributesW(str(hidden), 0x2)  # FILE_ATTRIBUTE_HIDDEN
+    return mine
+
+
+def process_alive(pid):
+    """Работает ли сейчас процесс с таким номером."""
+    try:
+        import ctypes
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return code.value == 259  # STILL_ACTIVE
+    except (AttributeError, OSError):  # не Windows: осторожно считаем живым — чужое не трогаем
+        return True
 
 
 def safe_name(name):
@@ -81,8 +99,23 @@ def remove_parts(save_dir, names):
 
 
 def clean_temp(dirs):
+    """Убрать свои недокачанные куски (при выходе)."""
     for d in dirs:
-        shutil.rmtree(Path(d) / ".tmp", ignore_errors=True)
+        shutil.rmtree(Path(d) / ".tmp" / str(os.getpid()), ignore_errors=True)
+
+
+def clean_stale_temp(dirs):
+    """Убрать куски, оставшиеся от копий качалки, которых уже нет (при старте). Папки работающих копий не трогаем."""
+    for d in dirs:
+        hidden = Path(d) / ".tmp"
+        for item in (hidden.iterdir() if hidden.is_dir() else []):
+            if item.is_dir() and item.name.isdigit() and process_alive(int(item.name)):
+                continue
+            if item.is_dir():
+                shutil.rmtree(item, ignore_errors=True)
+            else:
+                with contextlib.suppress(OSError):  # занят — уберём при следующем запуске
+                    item.unlink()
 
 
 def probe(path):

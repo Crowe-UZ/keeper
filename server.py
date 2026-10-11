@@ -25,7 +25,7 @@ from kachalka import state
 from kachalka.api import Handler
 from kachalka.config import AUTO, HOST, LOG_DIR, PORT, WORKERS, log
 from kachalka.download import reporter, worker
-from kachalka.files import clean_temp
+from kachalka.files import clean_stale_temp
 from kachalka.lifecycle import code_watch, idle_watch, run_tray, shutdown, thread_crash
 from kachalka.system import FFMPEG_DIR, environment
 
@@ -41,7 +41,7 @@ def main():
     except OSError as e:
         log.error(f"Не могу занять порт {PORT}: {e}. Похоже, качалка уже запущена.")
         sys.exit(1)
-    clean_temp([state.save_dir])  # куски от прошлого запуска, если его закрыли грубо
+    clean_stale_temp([state.save_dir])  # куски от прошлых запусков, закрытых грубо; работающие копии не трогаем
     for _ in range(WORKERS):
         start(worker)
     for part in (reporter, server.serve_forever, run_tray):

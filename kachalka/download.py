@@ -23,13 +23,13 @@ from .textahead import TEXT_FORMAT, TextAhead
 def friendly_error(msg):
     low = msg.lower()
     if "drm" in low:
-        return "Видео защищено DRM — такое скачать нельзя."
+        return "Видео защищено от копирования — скачать его нельзя."
     if "unsupported url" in low:
-        return "На странице не нашлось видео. Включи ролик (▶) и попробуй снова — расширение поймает поток."
+        return "Не нашёл видео на странице. Включи его (▶), подожди пару секунд и нажми «Повторить»."
     if any(w in low for w in ("sign in", "login", "log in", "private", "403", "401", "forbidden", "cookies")):
-        return "Сайт не пустил (нужен вход или ссылка устарела). Обнови страницу, включи видео и скачай снова."
-    if "ffmpeg" in low:
-        return "Проблема с ffmpeg при склейке. Подробности — в логе."
+        return "Сайт не отдал видео. Проверь, что ты вошёл на сайт, обнови страницу (F5), включи видео и скачай снова."
+    if "ffmpeg" in low and "нужен ffmpeg" not in low:  # своё понятное сообщение про отсутствие ffmpeg не затираем
+        return "Не получилось обработать файл. Проверь, что установлен ffmpeg (шаг 2 инструкции), и нажми «Повторить»."
     return msg[:300]
 
 
@@ -63,25 +63,49 @@ def progress_hook(job_id, job, lg):
     return hook
 
 
-def pick_format(mode, max_height, has_ffmpeg):
-    """Какой формат просить у yt-dlp. max_height — ограничение качества из окна расширения (0 — максимум);
-    если такого разрешения у видео нет — берём лучшее, что есть."""
-    cap = f"[height<={max_height}]" if max_height else ""
+# При равном разрешении берём H.264 + AAC: такой mp4 играет в любом плеере, телевизоре и редакторе.
+# Выше 1080p у YouTube H.264 нет — там останется VP9/AV1, разрешение важнее.
+SORT = ["fps", "hdr:12", "vcodec:h264", "acodec:m4a"]
+# Звук: отдельная дорожка AAC (ложится в .m4a без пережатия), иначе любая отдельная дорожка; если звук вшит
+# в видео — вариант не выше 480p (у самых нижних звук бывает урезан), затем 720p, затем самый лёгкий.
+AUDIO_FORMAT = "ba[acodec^=mp4a]/ba/b[height<=480]/b[height<=720]/w"
+
+
+def pick_format(mode, max_height, has_ffmpeg, private=False):
+    """Какой формат просить у yt-dlp. max_height — ограничение качества из окна расширения (0 — максимум):
+    это предпочтение, а не фильтр — нет такого разрешения, возьмётся ближайшее; считается по меньшей стороне,
+    так что вертикальное видео не путает. private — пойманный поток или урок курса: в файл ничего не дописываем."""
+    res = f"res:{max_height}" if max_height else "res"
     if mode == "text":
         return {"format": TEXT_FORMAT}  # самый лёгкий звук как есть: он временный, перекодировать незачем
     if mode == "audio":
-        mp3 = {"postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "0"}]}
-        return {"format": "bestaudio/best", **(mp3 if has_ffmpeg else {})}
+        m4a = {"postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "m4a"}]}  # AAC ложится без пережатия
+        return {"format": AUDIO_FORMAT, **(m4a if has_ffmpeg else {})}
     if not has_ffmpeg:
-        return {"format": f"b{cap}/b" if cap else "b"}  # без ffmpeg склеивать нечем — берём готовый файл со звуком
-    # максимальное разрешение/fps/битрейт: лучшее видео + лучший звук, склеить без пережатия
-    return {"format": f"bv*{cap}+ba/b{cap}/bv*+ba/b" if cap else "bv*+ba/b",
-            "merge_output_format": "mp4",
-            "postprocessors": [{"key": "FFmpegMetadata", "add_metadata": True}]}
+        return {"format": "b", "format_sort": [res]}  # без ffmpeg склеивать нечем — берём готовый файл со звуком
+    # лучшее видео + лучший звук, склеить без пережатия
+    fmt = {"format": "bv*+ba/b", "format_sort": [res, *SORT], "merge_output_format": "mp4"}
+    if not private:
+        # название и описание — в файл. У пойманного потока «описание» — служебная ссылка плеера с номером
+        # пользователя и его адресом, такое в файл не пишем
+        fmt["postprocessors"] = [{"key": "FFmpegMetadata", "add_metadata": True}]
+    return fmt
+
+
+def fragments_for(active):
+    """Сколько кусков HLS качать одновременно в одной загрузке. Запас — 16 соединений на все загрузки сразу:
+    три загрузки по 16 к одному серверу кончались массовыми обрывами."""
+    return max(4, 16 // max(1, active))
+
+
+def retry_pause(attempt):
+    """Пауза перед повтором оборвавшегося куска, секунд: растёт, но остаётся короткой."""
+    return min(2 ** attempt, 10)
 
 
 def build_opts(job_id, job, cookie_file, lg):
     tmp = temp_dir(job["save_dir"])
+    private = job["sniffed"] or job_kind(job["url"]) != "page"
     opts = {
         "outtmpl": unique_template(job["title"], job["save_dir"]) if job["sniffed"] else "%(title).150B [%(id)s].%(ext)s",
         # когда нужен только текст, звуковая дорожка в папку с видео не попадает вовсе — остаётся в .tmp
@@ -94,9 +118,12 @@ def build_opts(job_id, job, cookie_file, lg):
         "windowsfilenames": True,
         "retries": 10,
         "fragment_retries": 10,
-        "concurrent_fragment_downloads": 16,  # потоки HLS качаем кусками параллельно — быстрее
+        "concurrent_fragment_downloads": fragments_for(summary()["active"]),  # HLS качаем кусками параллельно
+        "skip_unavailable_fragments": False,  # не скачался кусок — это ошибка, а не «готово» с дырой в видео
+        "retry_sleep_functions": {"fragment": retry_pause, "http": retry_pause},
+        "socket_timeout": 10,
         "http_headers": job["headers"],
-        **pick_format(job["mode"], job["max_height"], bool(FFMPEG_DIR)),
+        **pick_format(job["mode"], job["max_height"], bool(FFMPEG_DIR), private),
     }
     optional = {"js_runtimes": JS_RUNTIMES, "cookiefile": cookie_file, "ffmpeg_location": FFMPEG_DIR}
     opts.update({k: v for k, v in optional.items() if v})
@@ -153,7 +180,7 @@ def extract_infos(ydl, job, kind, lg):
     lg.info("GetCourse: страница урока, ищу плееры")
     players = getcourse_players(ydl, url, {**job["headers"], "Referer": url}, lg)
     if not players:
-        raise RuntimeError("На странице урока не нашлось плеера GetCourse. Включи видео (▶) — расширение поймает поток.")
+        raise RuntimeError("Не нашёл видео на странице урока. Включи его (▶), подожди пару секунд и скачай снова.")
     return [getcourse_info(ydl, pu, lg) for pu in players]
 
 
@@ -181,6 +208,8 @@ def download_infos(ydl, job_id, job, infos, named, names, lg):
     for n, info in enumerate(infos, 1):
         lg.info(f"видео {n}/{len(infos)}: extractor={info.get('extractor')} id={info.get('id')} title={info.get('title')!r}")
         lg.info(f"доступно форматов: {len(info.get('formats') or [])}")
+        for f in info.get("formats") or []:
+            lg.debug("  формат: " + describe_format(f))
         stem = name_download(ydl, job_id, job, info, n, len(infos), named, names)
         result = ydl.process_ie_result(info, download=True)
         for f in result.get("requested_formats") or [result]:
@@ -193,7 +222,7 @@ def finish_result(job_id, job, result, stem, lg, ahead=None):
     """Довести одно скачанное видео до того, что просили. Возвращает (главный файл или None, описание для окна)."""
     path = ((result.get("requested_downloads") or [{}])[0].get("filepath")) or result.get("filepath")
     if not path or not os.path.exists(path):
-        raise RuntimeError("yt-dlp сообщил об успехе, но скачанного файла нет на месте.")
+        raise RuntimeError("Файл скачался, но пропал — возможно, его удалил антивирус. Нажми «Повторить».")
     files, note = make_outputs(job_id, job, Path(path), stem, lg, ahead)
     about = []
     if job["mode"] != "text":  # временную звуковую дорожку описывать незачем — её уже не будет

@@ -133,7 +133,7 @@ class Handler(BaseHTTPRequestHandler):
             data = self._read_json()
         except ValueError as e:
             log.warning(f"кривой запрос /download: {e}")
-            return self._send(400, {"error": f"кривой запрос: {e}"})
+            return self._send(400, {"error": f"Не понял запрос — обнови страницу и попробуй ещё раз. ({e})"})
         url = (data.get("url") or "").strip()
         if not url.startswith(("http://", "https://")):
             log.warning(f"отклонена ссылка не http(s): {url[:200]!r}")

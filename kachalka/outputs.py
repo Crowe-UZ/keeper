@@ -14,7 +14,7 @@ from .transcribe import transcribe
 
 ORDER = ("video", "audio", "text")
 LABELS = {"video": "видео", "audio": "звук", "text": "текст"}
-EXT = {"audio": ".mp3", "text": ".txt"}
+EXT = {"audio": ".m4a", "text": ".txt"}
 
 
 def clean_want(want):
@@ -42,13 +42,16 @@ def free_path(folder, stem, ext):
     return path
 
 
-def extract_mp3(media, dest):
-    """Звук из скачанного видео — отдельным mp3."""
-    r = subprocess.run([str(Path(FFMPEG_DIR) / "ffmpeg"), "-v", "error", "-y", "-i", str(media), "-vn",
-                        "-c:a", "libmp3lame", "-q:a", "0", str(dest)],
-                       capture_output=True, text=True, timeout=3600, creationflags=NO_WINDOW)
-    if r.returncode or not dest.exists():
-        raise RuntimeError("ffmpeg не смог вынуть звук из видео: " + r.stderr.strip()[-300:])
+def extract_audio(media, dest):
+    """Звук из скачанного видео — отдельным файлом .m4a. Сначала без пережатия (мгновенно и без потери качества);
+    если дорожка не AAC и в .m4a как есть не ложится — пережимаем в AAC."""
+    ffmpeg = [str(Path(FFMPEG_DIR) / "ffmpeg"), "-v", "error", "-y", "-i", str(media), "-vn"]
+    for codec in (["-c:a", "copy"], ["-c:a", "aac", "-b:a", "160k"]):
+        r = subprocess.run([*ffmpeg, *codec, "-movflags", "+faststart", str(dest)],
+                           capture_output=True, text=True, timeout=3600, creationflags=NO_WINDOW)
+        if not r.returncode and dest.exists() and dest.stat().st_size:
+            return
+    raise RuntimeError("Не получилось вынуть звук из видео (нужен ffmpeg): " + r.stderr.strip()[-300:])
 
 
 def recognise(job_id, job, media, ahead, lg):
@@ -73,12 +76,12 @@ def make_text(job_id, job, media, stem, lg, ahead=None):
     text, model = recognise(job_id, job, media, ahead, lg)
     if not text.strip():
         lg.info(f"распознавание ({model}): речь не найдена")
-        return None, "речь не найдена"
+        return None, "речи в видео не нашлось — текстового файла нет"
     path = free_path(job["save_dir"], stem, EXT["text"])
     path.write_text(text, encoding="utf-8")
     words = len(text.split())
     lg.info(f"текст сохранён: {path} ({words} слов, модель {model})")
-    return path, f"текст: {words} слов"
+    return path, f"текст готов, слов: {words}"
 
 
 def make_outputs(job_id, job, media, stem, lg, ahead=None):
@@ -91,7 +94,7 @@ def make_outputs(job_id, job, media, stem, lg, ahead=None):
     if mode == "video" and "audio" in want:
         update(job_id, status="звук из видео", percent=0, speed="")
         files["audio"] = free_path(job["save_dir"], media.stem, EXT["audio"])
-        extract_mp3(media, files["audio"])
+        extract_audio(media, files["audio"])
         lg.info(f"звук из видео: {files['audio']}")
     if "text" in want:
         path, note = make_text(job_id, job, media, stem or media.stem, lg, ahead)

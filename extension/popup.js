@@ -11,7 +11,7 @@ const $ = (id) => document.getElementById(id);
 // Файлы расширения на диске обновились, а Chrome держит старые — перезагружаемся сами, без кнопки ⟳
 const onDisk = await fetch(chrome.runtime.getURL("manifest.json"), { cache: "no-store" }).then((r) => r.json()).catch(() => null);
 if (onDisk && onDisk.version !== chrome.runtime.getManifest().version) {
-  document.body.textContent = "Качалка обновилась — открой это окно ещё раз.";
+  document.body.textContent = "«Улов» обновился — открой это окно ещё раз.";
   setTimeout(() => chrome.runtime.reload(), 1200);
   await new Promise(() => {});  // дальше старый код не выполняем
 }
@@ -38,7 +38,7 @@ async function run(fn) {
 }
 
 // ----- состояние качалки: работает / запускается / не отвечает -----
-const STATES = { on: "работает", starting: "запускается…", off: "не запущена" };
+const STATES = { on: "работает", starting: "запускается…", off: "не запущен — нажми" };
 function setState(s) {
   $("state").className = "state " + s;
   $("stateText").textContent = STATES[s];
@@ -84,13 +84,13 @@ async function renderCaught() {
   items = [...caught.items].sort((a, b) => b.time - a.time);
   const many = !known && videos.length > 1;
   let hint = known
-    ? "Сайт известен — качаю по ссылке в максимальном качестве."
+    ? ""
     : many
-      ? `На странице ${videos.length} видео. Большая кнопка качает все, кнопка в списке — одно. Наведи на строку — плеер подсветится на странице.`
+      ? `На странице ${videos.length} видео: скачай все или выбери ниже. Наведи на строку — видео подсветится на странице.`
       : caught.items.length
         ? ""
-        : "Видео не поймано. Включи ролик (▶) на странице, подожди пару секунд и открой это окно снова.";
-  if (caught.drm) hint += '<br><span class="warn">⚠ Похоже, видео защищено DRM — скорее всего, скачать не выйдет.</span>';
+        : "Не вижу видео. Включи его (▶), подожди пару секунд и открой это окно снова.";
+  if (caught.drm) hint += '<br><span class="warn">⚠ Видео защищено от копирования — скачать, скорее всего, не получится.</span>';
   $("hint").innerHTML = hint;
   $("go").textContent = many ? `⬇ Скачать все (${videos.length})` : "⬇ Скачать";
 
@@ -100,11 +100,11 @@ async function renderCaught() {
       <div class="thumb">${n + 1}</div>
       <div class="info">
         <span class="name u" title="${esc(videoName(videos, n))}">${esc(videoName(videos, n))}</span>
-        <span class="u">${esc([v.duration ? clock(v.duration) : "", v.playing ? "играет" : "", kindName(v.best)].filter(Boolean).join(" · "))}</span>
+        <span class="u">${esc([v.duration ? clock(v.duration) : "", v.playing ? "играет" : ""].filter(Boolean).join(" · "))}</span>
       </div>
       <button class="small primary" title="Скачать это видео — то, что отмечено вверху">⬇ Скачать</button>
     </div>`).join("") + `
-    <details><summary>Подробнее: все потоки (${items.length})</summary>` + items.map((it, i) => `
+    <details><summary>Скачалось не то? Все найденные ссылки (${items.length})</summary>` + items.map((it, i) => `
     <div class="item">
       <span class="tag ${best.has(it) ? "best" : ""}">${esc(kindName(it))}${best.has(it) ? " ★" : ""}</span>
       <span class="u" title="${esc(it.url)}">${esc(new URL(it.url).hostname + new URL(it.url).pathname)}</span>
@@ -177,6 +177,11 @@ function highlight(video, on) {
 // ----- очередь загрузок -----
 const WAITING = ["подготовка", "склейка", "звук из видео", "отмена…"];  // идёт работа, но процента нет — полоска «бегает»
 const WITH_PERCENT = ["скачивается", "загрузка модели", "распознавание"];  // у этих этапов есть процент
+// как этапы называются для человека (качалка отдаёт короткие служебные названия)
+const STAGE = {
+  "подготовка": "начинаю", "склейка": "собираю файл", "звук из видео": "вынимаю звук",
+  "загрузка модели": "скачиваю распознавание речи (один раз)", "распознавание": "распознаю речь",
+};
 const ICON = { video: "🎬", audio: "🎵", text: "📝" };
 const NAME = { video: "видео", audio: "звук", text: "текст" };
 const FINISHED = /^(готово|ошибка|отменено)/;  // такие «Очистить» убирает из списка
@@ -198,7 +203,7 @@ function jobHtml(j) {
         <div class="pct">${counting ? j.percent + "%" : ""}</div>
       </div>
       <div class="bar"><div style="width:${j.percent}%"></div></div>
-      <div class="st">${several ? esc(want) + " · " : ""}${esc(j.status)}${extra ? " · " + esc(extra) : ""}${j.error ? " — " + esc(j.error) : ""}</div>
+      <div class="st">${several ? esc(want) + " · " : ""}${esc(STAGE[j.status] || j.status)}${extra ? " · " + esc(extra) : ""}${j.error ? " — " + esc(j.error) : ""}</div>
       <div class="acts">${
         CANCELLABLE.includes(j.status) ? `<button class="ghost small" data-act="/cancel" data-id="${esc(j.id)}">✕ Отмена</button>` : ""
       }${
@@ -225,7 +230,7 @@ async function refresh() {
   $("ver").textContent = `v${chrome.runtime.getManifest().version} · yt-dlp ${ytdlp}`;
   const counts = [s.active ? `качается ${s.active}` : "", s.queued ? `в очереди ${s.queued}` : "", s.done ? `готово ${s.done}` : "", s.failed ? `ошибок ${s.failed}` : ""]
     .filter(Boolean).join(" · ");
-  draw($("queue"), !jobs.length ? "" : `<div class="section">Загрузки<span class="u">${counts}</span>${jobs.some((j) => FINISHED.test(j.status)) ? '<button class="ghost small" data-act="/clear" title="Убрать из списка готовые и ошибки (файлы остаются)">Очистить</button>' : ""}</div>`
+  draw($("queue"), !jobs.length ? "" : `<div class="section">Загрузки<span class="u">${counts}</span>${jobs.some((j) => FINISHED.test(j.status)) ? '<button class="ghost small" data-act="/clear" title="Убрать из списка готовые и неудавшиеся (файлы остаются)">Убрать готовые</button>' : ""}</div>`
     + jobs.map(jobHtml).join(""));
 }
 

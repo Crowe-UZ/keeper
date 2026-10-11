@@ -17,13 +17,13 @@ export function startServer() {
     try {
       r = await chrome.runtime.sendNativeMessage(NATIVE_HOST, { cmd: "start" });
     } catch (e) {
-      throw new Error(`Качалка не установлена: запусти install.bat в папке download_web и перезагрузи расширение (${e.message})`);
+      throw new Error(`Программа-помощник не установлена. Открой папку, куда распаковал «Улов», дважды щёлкни install.bat и открой это окно снова. (${e.message})`);
     }
-    if (!r?.ok) throw new Error("Качалка не запустилась: " + (r?.error || "причина в logs\\launcher.log"));
+    if (!r?.ok) throw new Error("Не удалось запуститься: " + (r?.error || "запусти install.bat ещё раз; подробности — в файле logs\\launcher.log"));
     for (let i = 0; i < 60; i++) {
       try { await api("/status"); return; } catch { await new Promise((ok) => setTimeout(ok, 250)); }
     }
-    throw new Error("Качалка не запустилась — посмотри logs\\kachalka.log в папке download_web");
+    throw new Error("Не удалось запуститься. Запусти install.bat ещё раз; если не помогло — подробности в файле logs\\kachalka.log.");
   })().finally(() => { starting = null; });
   return starting;
 }

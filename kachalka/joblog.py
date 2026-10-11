@@ -35,6 +35,8 @@ class YtdlpLog:
 
     def debug(self, msg):
         # yt-dlp шлёт сюда и обычный вывод; строки прогресса не нужны — их тысячи
+        if "File locking is not supported" in msg:  # по три строки на каждый кусок HLS — 95% лога без пользы
+            return
         if not msg.startswith("[download]  ") or "Destination" in msg:
             self.lg.debug("yt-dlp: " + msg)
 
