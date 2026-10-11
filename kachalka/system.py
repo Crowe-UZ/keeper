@@ -8,11 +8,16 @@ import sys
 from pathlib import Path
 
 from yt_dlp.version import __version__ as YTDLP_VERSION
-from .config import (NO_WINDOW)
+from .config import NO_WINDOW, ROOT
 from . import state
 
 
-def find_ffmpeg():
+def find_ffmpeg(root=ROOT):
+    """Папка с ffmpeg и ffprobe. Сначала свой — его кладёт установщик: с ним программа проверена, а у человека
+    может стоять старый или урезанный. Потом тот, что есть в системе, потом поставленный через winget."""
+    own = root / "ffmpeg" / "bin"
+    if (own / "ffmpeg.exe").is_file():
+        return str(own)
     path = shutil.which("ffmpeg")
     if path:
         return str(Path(path).parent)

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Keeper — последний шаг</title>
+<style>
+  body { font: 16px/1.55 "Segoe UI", system-ui, sans-serif; max-width: 680px; margin: 40px auto; padding: 0 16px; color: #1c1c1e; }
+  h1 { font-size: 26px; margin-bottom: 4px; }
+  ol { padding-left: 22px; }
+  li { margin: 14px 0; }
+  code { background: #f0f0f3; padding: 3px 7px; border-radius: 6px; font-size: 15px; user-select: all; }
+  .note { color: #6b6b70; font-size: 14px; }
+  @media (prefers-color-scheme: dark) { body { background: #1c1c1e; color: #f2f2f7; } code { background: #2c2c2e; } .note { color: #9a9aa0; } }
+</style>
+</head>
+<body>
+<h1>Keeper установлен</h1>
+<p>Остался один шаг — добавить Keeper в Chrome. Сам установщик этого сделать не может: Chrome так не разрешает.</p>
+<ol>
+  <li>Открой в Chrome новую вкладку, вставь в строку адреса <code>chrome://extensions</code> и нажми Enter.</li>
+  <li>Справа вверху включи <b>Режим разработчика</b>.</li>
+  <li>Нажми <b>Загрузить распакованное расширение</b>. В открывшемся окне вставь в строку адреса папки
+      <code>%LOCALAPPDATA%\Keeper\extension</code>, нажми Enter, затем <b>Выбор папки</b>.</li>
+  <li>Нажми на значок пазла справа от адресной строки и закрепи Keeper булавкой.</li>
+</ol>
+<p>Готово. Открой страницу с видео и нажми на значок Keeper.</p>
+<p class="note">Запускать ничего не нужно: программа включается сама и сама выключается, когда качать нечего.
+Удалить Keeper можно в «Параметры → Приложения» Windows. Эта страница лежит в папке программы: next-steps.html.</p>
+</body>
+</html>

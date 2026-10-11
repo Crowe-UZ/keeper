@@ -21,3 +21,8 @@ tests/e2e/popup.png
 models/
 .aqk/report.md
 tests/e2e/site/gen/
+
+# установщик: скачанные Python и ffmpeg, промежуточная папка и готовый файл
+installer/cache/
+installer/stage/
+installer/out/

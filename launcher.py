@@ -27,6 +27,13 @@ UPDATE_EVERY = 24 * 3600
 UPDATING = HERE / "logs" / "updating.lock"  # идёт обновление yt-dlp
 
 
+def runtime(here, exe):
+    """Каким Python запускать программу. Установщик кладёт свой в папку python; у копии из репозитория —
+    окружение .venv, которое создаёт install.bat."""
+    own = here / "python" / exe
+    return own if own.is_file() else here / ".venv" / "Scripts" / exe
+
+
 def note(msg):
     (HERE / "logs").mkdir(exist_ok=True)
     with open(HERE / "logs" / "launcher.log", "a", encoding="utf-8") as f:
@@ -98,7 +105,7 @@ def wait_for_update():
 
 def start_server():
     wait_for_update()
-    args = [str(HERE / ".venv" / "Scripts" / "pythonw.exe"), str(HERE / "server.py"), "--auto"]
+    args = [str(runtime(HERE, "pythonw.exe")), str(HERE / "server.py"), "--auto"]
     # программа должна пережить и этот скрипт, и закрытие Chrome
     flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_BREAKAWAY_FROM_JOB
     (HERE / "logs").mkdir(exist_ok=True)

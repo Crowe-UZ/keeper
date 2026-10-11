@@ -1,0 +1,22 @@
+Keeper includes third-party software. Each component stays under its own licence.
+
+Python 3.12 (python\)
+  Python Software Foundation License. Build: python-build-standalone, https://github.com/astral-sh/python-build-standalone
+  Licence texts: python\LICENSE.txt
+
+FFmpeg (ffmpeg\)
+  GNU Lesser General Public License, version 2.1 or later. Unmodified build "win64-lgpl-shared" from
+  https://github.com/BtbN/FFmpeg-Builds ; source code: https://ffmpeg.org/download.html
+  Licence text: ffmpeg\LICENSE.txt
+  FFmpeg is used as separate programs (ffmpeg.exe, ffprobe.exe); you may replace the files in ffmpeg\bin with your own build.
+
+yt-dlp — The Unlicense, https://github.com/yt-dlp/yt-dlp
+sherpa-onnx — Apache License 2.0, https://github.com/k2-fsa/sherpa-onnx
+pystray — LGPL-3.0, https://github.com/moses-palmer/pystray
+Pillow — MIT-CMU (HPND), https://github.com/python-pillow/Pillow
+Licence files of the Python libraries are in python\Lib\site-packages\<library>.dist-info\
+
+Speech recognition models are not included; they are downloaded on request:
+  GigaAM v3 — MIT, SaluteDevices, https://huggingface.co/ai-sage/GigaAM-v3
+  Parakeet TDT 0.6B v3 — CC-BY-4.0, NVIDIA, https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
+  Silero VAD — MIT, https://github.com/snakers4/silero-vad
