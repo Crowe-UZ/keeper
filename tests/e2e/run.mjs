@@ -194,8 +194,11 @@ try {
   await popup.click("#notice button");
   await sleep(2500);
   check("«Скачать ещё раз» запускает загрузку", (await jobs()).length === 2);
-  await popup.evaluate(() => document.querySelector('.job [data-act="/cancel"]')?.click());
-  await waitJob((x) => x.st.startsWith("отменено"), 30000);
+  // отменяем только свою загрузку: в программе в это время может появиться чужая
+  await popup.evaluate(() => [...document.querySelectorAll(".job")]
+    .find((j) => j.querySelector(".title").innerText.includes("E2E") && j.querySelector('[data-act="/cancel"]'))
+    ?.querySelector('[data-act="/cancel"]').click());
+  await waitJob((x) => x.title.includes("E2E") && x.st.startsWith("отменено"), 30000);
 
   // ---- звук ----
   await cardBtn(1, "audio");

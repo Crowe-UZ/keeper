@@ -95,7 +95,10 @@ async function renderCaught() {
       : caught.items.length
         ? ""
         : "Не вижу видео. Включи его (▶), подожди пару секунд и открой это окно снова.";
-  if (caught.drm) hint += '<br><span class="warn">⚠ Видео защищено от копирования — скачать, скорее всего, не получится.</span>';
+  // защита от копирования — у конкретных видео: одно защищённое не должно пугать насчёт остальных
+  const locked = videos.filter((v) => v.drm).length;
+  if (locked && locked < videos.length) hint += `<br><span class="warn">⚠ Защищено от копирования: ${locked} из ${videos.length} (помечены 🔒) — они, скорее всего, не скачаются.</span>`;
+  else if (locked || caught.drm) hint += '<br><span class="warn">⚠ Видео защищено от копирования — скачать, скорее всего, не получится.</span>';
   $("hint").innerHTML = hint;
   $("go").textContent = many ? `⬇ Скачать все (${videos.length})` : "⬇ Скачать";
   $("go").disabled = !web || sending;
@@ -106,7 +109,7 @@ async function renderCaught() {
       <div class="thumb">${n + 1}</div>
       <div class="info">
         <span class="name u" title="${esc(videoName(videos, n))}">${esc(videoName(videos, n))}</span>
-        <span class="u">${esc([v.duration ? clock(v.duration) : "", v.playing ? "играет" : ""].filter(Boolean).join(" · "))}</span>
+        <span class="u">${esc([v.duration ? clock(v.duration) : "", v.playing ? "играет" : "", v.drm ? "🔒 защищено" : ""].filter(Boolean).join(" · "))}</span>
       </div>
       <button class="small primary" title="Скачать это видео — то, что отмечено вверху">⬇ Скачать</button>
     </div>`).join("") + `
@@ -356,9 +359,12 @@ $("chooseFolder").onclick = () => run(async () => {
 
 if (web) $("go").focus();  // окно открыли — Enter сразу качает, Tab ведёт по остальным кнопкам
 
-const scan = () => chrome.runtime.sendMessage({ type: "scan", tabId: tab.id }).catch(() => {});
+// Кадр для превью — самая дорогая часть осмотра страницы: снимаем его, пока у какого-то видео превью нет,
+// а потом — на каждом пятом осмотре
+let scans = 0;
+const scan = () => chrome.runtime.sendMessage({ type: "scan", tabId: tab.id, thumbs: scans++ % 5 === 0 || videos.some((v) => !v.thumb) }).catch(() => {});
 refresh();
-await scan();
-renderCaught();
+renderCaught();  // уже пойманное показываем сразу, не дожидаясь осмотра страницы
+scan().then(renderCaught);
 setInterval(() => { refresh(); renderCaught(); }, 1000);
 setInterval(scan, 2000);  // длительность и «играет сейчас» меняются, пока окно открыто

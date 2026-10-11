@@ -39,9 +39,9 @@ export async function apiUp(path, opts) {
   }
 }
 
-export const PLAYER = "Плеер GetCourse";
-// iframe плеера GetCourse: адрес плеера меняется, путь — нет
-export const SIGN_PLAYER_RE = /\/sign-player\/?\?(?:[^#]*&)?json=/;
+// Что считать видео и как собирать потоки в видео — в streams.js (там нет обращений к Chrome, он проверяется тестами)
+import { groupVideos, pickBest, videoName } from "./streams.js";
+export * from "./streams.js";
 
 // Сайты, которые yt-dlp понимает сам по ссылке на страницу — там перехват не нужен
 const KNOWN = [
@@ -60,64 +60,6 @@ export function isKnownSite(url) {
 export async function getCaught(tabId) {
   const key = "tab_" + tabId;
   return (await chrome.storage.session.get(key))[key] || { items: [], drm: false, frames: {} };
-}
-
-export const norm = (u) => u.split("?")[0];
-// Один и тот же поток запрашивается много раз с разными токенами — сравниваем без них.
-// Плееры GetCourse отличаются только параметром json=, их сравниваем целиком
-export const itemKey = (i) => (i.kind === PLAYER ? i.url : norm(i.url));
-
-// Потоки вкладки -> отдельные видео. Каждый плеер живёт в своём iframe: один iframe = одно видео.
-// Видео прямо на странице (без iframe) делим по мастер-плейлистам: качества мастера — то же видео.
-// Порядок — как плееры идут на странице, иначе — в каком порядке поймали
-export function groupVideos(caught) {
-  const frames = caught.frames || {};
-  const masters = caught.items.filter((i) => i.master && !i.frameId);
-  const groups = new Map();
-  for (const it of caught.items) {
-    let key = "f" + it.frameId;
-    if (!it.frameId) {
-      const m = it.kind === "HLS" && !it.master && masters.find((m) => m.variants?.includes(norm(it.url)));
-      key = "u" + itemKey(m || it);
-    }
-    if (!groups.has(key)) groups.set(key, { frameId: it.frameId || 0, items: [] });
-    groups.get(key).items.push(it);
-  }
-  const all = [...groups.values()];
-  const onPage = all.filter((g) => !g.frameId).length;
-  const videos = all.map((g) => {
-    const meta = g.frameId ? frames[g.frameId] : onPage === 1 ? frames[0] : null;
-    return {
-      ...g,
-      best: pickBest(g.items),
-      duration: meta?.duration || 0,
-      playing: !!meta?.playing,
-      thumb: meta?.thumb || "",
-      title: (g.frameId && meta?.title) || "",
-      // адрес iframe плеера — чтобы подсветить его на странице
-      src: g.frameId ? meta?.href : g.items.find((i) => i.kind === PLAYER)?.url,
-      order: g.frameId && meta?.order >= 0 ? meta.order : Infinity,
-      first: Math.min(...g.items.map((i) => i.first ?? i.time)),
-    };
-  }).sort((a, b) => (a.order - b.order) || (a.first - b.first));
-  // одинаковый заголовок у нескольких видео — значит, поймали общий текст страницы, а не название ролика
-  for (const v of videos) {
-    if (v.title && videos.filter((x) => x.title === v.title).length > 1) v.shared = true;
-  }
-  for (const v of videos) if (v.shared) v.title = "";
-  return videos;
-}
-
-// Как видео называется в списке: номер есть всегда, название — когда его удалось найти на странице
-export function videoName(videos, n) {
-  return videos[n].title ? `${n + 1}. ${videos[n].title}` : `Видео ${n + 1}`;
-}
-
-// Лучший пойманный поток: мастер-плейлист HLS (все качества) > плеер GetCourse > DASH > любой m3u8 > файл;
-// при равенстве — свежий
-export function pickBest(items) {
-  const rank = (i) => (i.master ? 5 : i.kind === PLAYER ? 4 : i.kind === "DASH" ? 3 : i.kind === "HLS" ? 2 : 1);
-  return [...items].sort((a, b) => rank(b) - rank(a) || b.time - a.time)[0];
 }
 
 async function cookiesFor(urls) {

@@ -1,11 +1,12 @@
-import { buildJob, buildJobs, send, getCaught, clientLog, norm, itemKey, PLAYER, SIGN_PLAYER_RE } from "./common.js";
+import { buildJob, buildJobs, send, getCaught, clientLog, norm, itemKey, classify, fullSize, trimItems, PLAYER, SIGN_PLAYER_RE } from "./common.js";
 
 self.addEventListener("error", (e) => clientLog(`фон: ${e.message} @ ${e.filename}:${e.lineno}`));
 self.addEventListener("unhandledrejection", (e) => clientLog(`фон (promise): ${e.reason?.stack || e.reason}`));
 
 // ---------- перехват видеопотоков во вкладках ----------
-const FILE_RE = /\.(mp4|webm|mov|m4v|mkv)(\?|#|$)/i;
-const SEGMENT_RE = /\.(ts|m4s|aac|m4a)(\?|#|$)|[/_-](seg|segment|frag|fragment|chunk)[-_]?\d/i;
+// Видео приходит запросами этих видов. Картинки, стили, скрипты и шрифты — тысячи запросов на каждой
+// странице — расширение не видит вовсе: ни их адресов, ни заголовков.
+const MEDIA_TYPES = ["sub_frame", "xmlhttprequest", "media", "object", "other"];
 const DRM_RE = /widevine|playready|fairplay|\/license|drm.*licen[cs]e/i;
 const IGNORE_HOSTS = /googlevideo\.com|doubleclick|googlesyndication|^ads?\./i;
 
@@ -23,11 +24,13 @@ chrome.webRequest.onSendHeaders.addListener((d) => {
   if (!h.Referer && d.documentUrl) h.Referer = d.documentUrl;
   reqHeaders.set(d.requestId, h);
   if (reqHeaders.size > 2000) reqHeaders.delete(reqHeaders.keys().next().value);
-}, { urls: ["<all_urls>"] }, ["requestHeaders", "extraHeaders"]);
+}, { urls: ["<all_urls>"], types: MEDIA_TYPES }, ["requestHeaders", "extraHeaders"]);
 
 chrome.webRequest.onHeadersReceived.addListener((d) => {
+  const sent = reqHeaders.get(d.requestId) || {};
+  reqHeaders.delete(d.requestId);  // заголовки запроса нужны один раз — к этому ответу; дальше их не храним
   if (d.tabId < 0 || IGNORE_HOSTS.test(new URL(d.url).hostname)) return;
-  if (DRM_RE.test(d.url) && d.method === "POST") return void markDrm(d.tabId);
+  if (DRM_RE.test(d.url) && d.method === "POST") return void markDrm(d.tabId, d.frameId);
   const redirect = d.statusCode >= 300 && d.statusCode < 400;
   // Страница загружается заново (переход или F5) — всё пойманное раньше уже не про неё. Раньше список
   // сбрасывался только при смене адреса, и после F5 в окне оставались старые видео с протухшими ссылками.
@@ -38,23 +41,19 @@ chrome.webRequest.onHeadersReceived.addListener((d) => {
   if (d.statusCode !== 200 && d.statusCode !== 206) return;
 
   if (d.type === "sub_frame" && SIGN_PLAYER_RE.test(d.url)) {
-    return void addItem(d.tabId, { url: d.url, kind: PLAYER, frameId: d.frameId, headers: reqHeaders.get(d.requestId) || {}, time: Date.now(), master: false });
+    return void addItem(d.tabId, { url: d.url, kind: PLAYER, frameId: d.frameId, headers: sent, time: Date.now(), master: false });
   }
 
   const type = (d.responseHeaders || []).find((h) => h.name.toLowerCase() === "content-type")?.value?.toLowerCase() || "";
-  let kind = null;
-  if (/mpegurl/.test(type) || /\.m3u8(\?|#|$)/i.test(d.url) || /\/api\/playlist\/(master|media)\//.test(d.url)) kind = "HLS";
-  else if (/dash\+xml/.test(type) || /\.mpd(\?|#|$)/i.test(d.url)) kind = "DASH";
-  else if ((type.startsWith("video/") || FILE_RE.test(d.url)) && !SEGMENT_RE.test(d.url)) kind = "Файл";
+  const kind = classify({ url: d.url, type, size: fullSize(d.responseHeaders, d.statusCode) });
   if (!kind) return;
 
-  const headers = reqHeaders.get(d.requestId) || {};
-  const item = { url: d.url, kind, frameId: d.frameId, headers, time: Date.now(), master: false };
+  const item = { url: d.url, kind, frameId: d.frameId, headers: sent, time: Date.now(), master: false };
   addItem(d.tabId, item).then(() => {
     // плейлист читаем один раз: плеер перезапрашивает его каждые несколько секунд, а нам хватит первого ответа
     if (kind === "HLS" && !checked.has(d.tabId + " " + itemKey(item))) checkMaster(d.tabId, item);
   });
-}, { urls: ["<all_urls>"] }, ["responseHeaders"]);
+}, { urls: ["<all_urls>"], types: ["main_frame", ...MEDIA_TYPES] }, ["responseHeaders"]);
 
 // Очередь записи, чтобы параллельные запросы не затирали друг друга
 let chain = Promise.resolve();
@@ -62,7 +61,7 @@ function mutate(tabId, fn) {
   chain = chain.then(async () => {
     const data = await getCaught(tabId);
     fn(data);
-    data.items = data.items.slice(-150);
+    data.items = trimItems(data.items);
     await chrome.storage.session.set({ ["tab_" + tabId]: data });
     updateBadge(tabId, data);
   }).catch((e) => clientLog(`фон: не записал потоки вкладки ${tabId}: ${e?.message || e}`));  // например, кончилось место в хранилище
@@ -72,11 +71,14 @@ function mutate(tabId, fn) {
 // Через ту же очередь, что и добавление: иначе уже начатая запись вернула бы старые потоки обратно
 function resetTab(tabId) {
   for (const key of checked) if (key.startsWith(tabId + " ")) checked.delete(key);
-  return mutate(tabId, (data) => { data.items = []; data.frames = {}; data.drm = false; });
+  return mutate(tabId, (data) => { data.items = []; data.frames = {}; data.drm = false; data.drmFrames = {}; });
 }
 
 function dropFrame(tabId, frameId) {
-  return mutate(tabId, (data) => { data.items = data.items.filter((i) => i.frameId !== frameId); });
+  return mutate(tabId, (data) => {
+    data.items = data.items.filter((i) => i.frameId !== frameId);
+    delete data.drmFrames?.[frameId];
+  });
 }
 
 // fresh=false — поток найден в разметке, а не в сети: свежую ссылку и заголовки уже пойманного не трогаем
@@ -91,14 +93,15 @@ function addItem(tabId, item) {
   return mutate(tabId, (data) => upsert(data, item));
 }
 
-function markDrm(tabId) {
-  return mutate(tabId, (data) => { data.drm = true; });
+// Запрос лицензии пришёл из конкретного плеера — защищённым помечаем его видео, а не все на вкладке
+function markDrm(tabId, frameId) {
+  return mutate(tabId, (data) => { data.drm = true; (data.drmFrames ||= {})[frameId || 0] = true; });
 }
 
 const checked = new Set();  // «вкладка ключ-потока» — плейлисты, которые уже прочитаны
 
 // Мастер-плейлист HLS содержит список качеств — именно его надо качать, чтобы взять лучшее
-async function checkMaster(tabId, item) {
+async function checkMaster(tabId, item, attempt = 1) {
   const key = tabId + " " + itemKey(item);
   checked.add(key);
   try {
@@ -116,12 +119,21 @@ async function checkMaster(tabId, item) {
     }).filter(Boolean);
     await mutate(tabId, (data) => {
       const it = data.items.find((i) => itemKey(i) === itemKey(item));  // по ключу: ссылку за это время могли перезапросить с новым токеном
-      if (it) Object.assign(it, { master, variants });
+      if (it) Object.assign(it, { master, variants, drm, unread: false });
       if (drm) data.drm = true;
     });
   } catch (e) {
-    // не смогли прочитать — не страшно, программа разберётся сама; в следующий раз попробуем снова
+    if (attempt < 2) {  // сеть моргнула — одна повторная попытка чуть погодя
+      await new Promise((r) => setTimeout(r, 1500));
+      return checkMaster(tabId, item, attempt + 1);
+    }
+    // не смогли прочитать — программа разберётся сама; плеер запросит плейлист снова — попробуем снова.
+    // Помечаем поток: по пометке его качества соберутся в одно видео по папке, а не станут тремя разными
     checked.delete(key);
+    await mutate(tabId, (data) => {
+      const it = data.items.find((i) => itemKey(i) === itemKey(item));
+      if (it && !it.master) it.unread = true;
+    });
     console.log("[keeper] не прочитал плейлист", item.url, e);
   }
 }
@@ -142,11 +154,13 @@ chrome.tabs.onReplaced.addListener((_added, removed) => forget(removed));
 // Заодно узнаём про каждый фрейм: какой он по счёту на странице, длительность видео, играет ли оно,
 // кадр для превью и — если получится — заголовок, который стоит на странице над плеером.
 // Всё это подсказки: сайтов тысячи, и где не угадали — в окне остаётся просто «Видео N».
-async function scanTab(tabId) {
+// thumbs — снимать ли кадр для превью: это самая дорогая часть, окно просит её не каждый раз
+async function scanTab(tabId, thumbs = true) {
   try {
     const results = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
-      func: () => {
+      args: [thumbs],
+      func: (wantThumb) => {
         const PLAYERS = "iframe, video";
         const srcOf = (e) => e.src || e.dataset?.src || "";
         const srcs = (sel) => [...document.querySelectorAll(sel)].map(srcOf).filter((u) => /^https?:/.test(u));
@@ -174,7 +188,7 @@ async function scanTab(tabId) {
         const v = videos.find((x) => !x.paused) || videos[0];
         let thumb = "";
         try {
-          if (v && v.currentTime > 0 && v.readyState >= 2 && v.videoWidth) {
+          if (wantThumb && v && v.currentTime > 0 && v.readyState >= 2 && v.videoWidth) {
             const c = document.createElement("canvas");
             c.width = 160;
             c.height = Math.round(160 * v.videoHeight / v.videoWidth);
@@ -182,8 +196,8 @@ async function scanTab(tabId) {
             thumb = c.toDataURL("image/jpeg", 0.6);
           }
         } catch { /* чужое видео без разрешения на чтение кадров — останемся с обложкой */ }
-        thumb ||= v?.poster || "";
-        if (!thumb && window !== top) {  // внутри плеера обложка обычно лежит картинкой или фоном блока
+        thumb ||= (wantThumb && v?.poster) || "";
+        if (wantThumb && !thumb && window !== top) {  // внутри плеера обложка обычно лежит картинкой или фоном блока
           const el = document.querySelector('[class*="poster" i], [class*="preview" i], [class*="cover" i], [class*="thumb" i]');
           const bg = el && getComputedStyle(el).backgroundImage.match(/url\(["']?([^"')]+)/)?.[1];
           thumb = bg || (el?.tagName === "IMG" ? el.src : el?.querySelector("img")?.src) || "";
@@ -212,11 +226,13 @@ async function scanTab(tabId) {
       if (frameId && SIGN_PLAYER_RE.test(r.href)) add(r.href, PLAYER, frameId);
       for (const url of r.iframes) if (SIGN_PLAYER_RE.test(url)) add(url, PLAYER);
       for (const url of r.media) {
-        if (!/\.(m3u8|mpd|mp4|webm)(\?|#|$)/i.test(url)) continue;
-        add(url, /\.m3u8/i.test(url) ? "HLS" : /\.mpd/i.test(url) ? "DASH" : "Файл", frameId);
+        const kind = classify({ url });  // то же правило, что и для перехваченных запросов
+        if (kind) add(url, kind, frameId);
       }
     }
     await mutate(tabId, (data) => {
+      // кадр в этот раз не снимали или не вышло — оставляем прежний
+      for (const [id, f] of Object.entries(frames)) f.thumb ||= data.frames?.[id]?.thumb || "";
       data.frames = frames;
       for (const item of found) upsert(data, item, false);
     });
@@ -227,7 +243,7 @@ async function scanTab(tabId) {
 
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   if (msg?.type === "scan") {
-    scanTab(msg.tabId).then(() => reply(true));
+    scanTab(msg.tabId, msg.thumbs !== false).then(() => reply(true));
     return true;
   }
 });
