@@ -10,6 +10,7 @@ import time
 from .config import (ICON, IDLE_EXIT, LOG_DIR, NO_WINDOW, ROOT, log)
 from . import state
 from .state import jobs, lock, stopping, summary
+from .children import BREAKAWAY
 from .files import clean_temp
 from .windows import open_path
 
@@ -67,12 +68,16 @@ def start_update():
     """Перед выходом по простою запустить обновление yt-dlp отдельным процессом: оно проверит, пора ли (раз в сутки),
     и сделает своё дело, когда нас уже не будет. Раньше обновление шло перед запуском, и окно ждало до 90 секунд."""
     python = Path(sys.executable).with_name("python.exe")
-    try:
-        subprocess.Popen([str(python), str(ROOT / "launcher.py"), "--update"], cwd=ROOT, stdin=subprocess.DEVNULL,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         creationflags=subprocess.DETACHED_PROCESS | NO_WINDOW)
-    except OSError as e:
-        log.warning(f"не смог запустить обновление yt-dlp: {e!r}")
+    flags = subprocess.DETACHED_PROCESS | NO_WINDOW
+    # Обновление должно нас пережить, а дочерние процессы теперь закрываются вместе с нами (children.py) —
+    # отвязываем его. Если отвязка запрещена (нас самих запустили связанными) — запускаем как раньше
+    for extra in (BREAKAWAY, 0):
+        try:
+            subprocess.Popen([str(python), str(ROOT / "launcher.py"), "--update"], cwd=ROOT, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags | extra)
+            return
+        except OSError as e:
+            log.warning(f"не смог запустить обновление yt-dlp: {e!r}")
 
 
 def code_watch():

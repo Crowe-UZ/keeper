@@ -4,19 +4,54 @@ import json
 import logging
 import os
 import subprocess
+import sys
+import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 from yt_dlp.version import __version__ as YTDLP_VERSION
-from .config import FINAL, HEIGHTS, LOG_DIR, PORT, extension_id, log, save_settings
+from .config import FINAL, HEIGHTS, LOG_DIR, NO_WINDOW, PORT, ROOT, extension_id, log, save_settings
 from . import state
+from .files import writable
 from .state import jobs, lock, stopping, summary, tasks
 from .history import already_downloaded, job_key
 from .outputs import clean_formats, clean_want, download_mode, want_label
 from .system import FFMPEG_DIR
 from .windows import open_in_front, open_path
+
+
+choosing = threading.Lock()  # окно выбора папки — одно за раз
+
+
+def ask_folder(start):
+    """Показать окно «Выбор папки» отдельным процессом и вернуть выбранное ('' — передумали)."""
+    python = Path(sys.executable).with_name("python.exe")
+    r = subprocess.run([str(python), "-m", "kachalka.folder_dialog", str(start)], cwd=ROOT, capture_output=True,
+                       creationflags=NO_WINDOW)
+    if r.returncode:
+        raise RuntimeError(f"окно выбора папки не открылось: {r.stderr.decode('utf-8', 'replace')[-500:]}")
+    return r.stdout.decode("utf-8").strip()
+
+
+def choose_folder():
+    """Сменить папку для файлов через окно Windows. Возвращает (код ответа, ответ расширению)."""
+    if not choosing.acquire(blocking=False):  # второе нажатие, пока окно открыто, — не второе окно
+        return 409, {"error": "Окно выбора папки уже открыто — посмотри на панели задач."}
+    try:
+        chosen = ask_folder(state.save_dir)
+    finally:
+        choosing.release()
+    if not chosen:
+        return 200, {"folder": str(state.save_dir), "changed": False}
+    if not writable(chosen):
+        log.warning(f"папка не подошла — в неё нельзя записывать: {chosen}")
+        return 400, {"error": "В эту папку нельзя записывать — выбери другую."}
+    state.save_dir = Path(chosen)
+    save_settings(save_dir=str(state.save_dir))
+    log.info(f"папка для файлов изменена: {state.save_dir}")
+    return 200, {"folder": str(state.save_dir), "changed": True}
 
 
 EXTENSION_ID = extension_id()
@@ -238,19 +273,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _choose_folder(self, _path=None, _job_id=None):
         """Стандартное окно Windows «Выбор папки» — прямо на этом ПК, поверх Chrome."""
-        import tkinter
-        from tkinter import filedialog
-        root = tkinter.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        chosen = filedialog.askdirectory(parent=root, initialdir=str(state.save_dir), title="Куда сохранять видео?")
-        root.destroy()
-        if not chosen:
-            return self._send(200, {"folder": str(state.save_dir), "changed": False})
-        state.save_dir = Path(chosen)
-        save_settings(save_dir=str(state.save_dir))
-        log.info(f"папка для видео изменена: {state.save_dir}")
-        return self._send(200, {"folder": str(state.save_dir), "changed": True})
+        self._send(*choose_folder())
 
     def _read_json(self):
         try:

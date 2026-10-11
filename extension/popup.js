@@ -315,7 +315,10 @@ $("logs").onclick = () => run(() => apiUp("/open-logs", POST));
 $("folder").onclick = () => run(() => apiUp("/open-folder", POST));
 $("chooseFolder").onclick = () => run(async () => {
   $("chooseFolder").textContent = "Выбери в окне Windows…";
-  try { await apiUp("/choose-folder", POST); } finally { $("chooseFolder").textContent = "Сменить"; }
+  try {
+    const r = await (await apiUp("/choose-folder", POST)).json();
+    if (r.error) $("err").textContent = r.error;  // папка не подошла или окно уже открыто
+  } finally { $("chooseFolder").textContent = "Сменить"; }
 });
 
 const scan = () => chrome.runtime.sendMessage({ type: "scan", tabId: tab.id }).catch(() => {});

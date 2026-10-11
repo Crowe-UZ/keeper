@@ -24,6 +24,7 @@ from http.server import ThreadingHTTPServer
 
 from kachalka import state
 from kachalka.api import Handler
+from kachalka.children import tie_children
 from kachalka.config import AUTO, HOST, LOG_DIR, PORT, WORKERS, log
 from kachalka.download import reporter, worker
 from kachalka.files import clean_stale_temp
@@ -53,6 +54,8 @@ def main():
     except OSError as e:
         log.error(f"Не могу занять порт {PORT}: {e}. Похоже, качалка уже запущена.")
         sys.exit(1)
+    if not tie_children():
+        log.warning("не смог связать дочерние процессы с собой: после аварии ffmpeg может остаться работать")
     clean_stale_temp([state.save_dir])  # куски от прошлых запусков, закрытых грубо; работающие копии не трогаем
     for _ in range(WORKERS):
         start(worker)

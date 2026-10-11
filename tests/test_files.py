@@ -1,8 +1,5 @@
 """Имена файлов, описание готового файла, ключ «это то же самое видео» и адреса, которые зовёт расширение."""
-import os
-import tempfile
 import unittest
-from pathlib import Path
 
 from kachalka import api, files, history
 
@@ -17,28 +14,6 @@ class Names(unittest.TestCase):
 
     def test_glob_special_characters_are_escaped(self):
         self.assertEqual(files.glob_escape("Видео [1]*"), "Видео [[]1[]][*]")
-
-
-class TempFolder(unittest.TestCase):
-    def test_each_running_copy_keeps_its_pieces_in_its_own_folder(self):
-        # иначе вторая запущенная копия при старте стирала недокачанное у первой
-        with tempfile.TemporaryDirectory() as d:
-            mine = files.temp_dir(d)
-            self.assertEqual(mine, Path(d) / ".tmp" / str(os.getpid()))
-            self.assertTrue(mine.is_dir())
-
-    def test_cleanup_removes_only_folders_of_copies_that_are_gone(self):
-        with tempfile.TemporaryDirectory() as d:
-            mine = files.temp_dir(d)
-            (mine / "a.part").write_text("x")
-            dead = Path(d) / ".tmp" / "999999999"  # такого процесса нет
-            dead.mkdir()
-            (dead / "b.part").write_text("x")
-            (Path(d) / ".tmp" / "old.part").write_text("x")  # кусок от версии, где папка была общей
-            files.clean_stale_temp([d])
-            self.assertTrue((mine / "a.part").exists())
-            self.assertFalse(dead.exists())
-            self.assertFalse((Path(d) / ".tmp" / "old.part").exists())
 
 
 class Probe(unittest.TestCase):

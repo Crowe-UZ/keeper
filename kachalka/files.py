@@ -13,10 +13,19 @@ from .config import (NO_WINDOW)
 from .system import FFMPEG_DIR
 
 
+# Своё имя временной папки: обычную «.tmp» в папке загрузок могла завести другая программа, а мы при старте
+# стирали в ней всё подряд. LEGACY_TEMP — как папка называлась раньше: из неё убираем только заведомо своё.
+TEMP_NAME = ".keeper-tmp"
+LEGACY_TEMP = ".tmp"
+# Cookies вкладок — в своей папке внутри временной папки Windows, у каждой запущенной копии своя (по номеру
+# процесса): после грубого выхода следующий запуск находит и стирает оставшееся
+COOKIE_HOME = Path(tempfile.gettempdir()) / "keeper-cookies"
+
+
 def temp_dir(save_dir):
-    """Куски недокачанных видео — в скрытой подпапке .tmp, чтобы не путать с готовыми. У каждой запущенной
-    копии качалки там своя папка (по номеру процесса): иначе вторая копия при старте стирала чужое недокачанное."""
-    hidden = Path(save_dir) / ".tmp"
+    """Куски недокачанных видео — в скрытой подпапке, чтобы не путать с готовыми. У каждой запущенной копии
+    там своя папка (по номеру процесса): иначе вторая копия при старте стирала чужое недокачанное."""
+    hidden = Path(save_dir) / TEMP_NAME
     mine = hidden / str(os.getpid())
     mine.mkdir(parents=True, exist_ok=True)
     with contextlib.suppress(AttributeError, OSError):  # не Windows или нет прав — папка просто останется видимой
@@ -75,7 +84,9 @@ def write_cookies(cookies):
     """Cookies из Chrome -> временный файл в формате Netscape, который понимает yt-dlp."""
     if not cookies:
         return None
-    f = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8")
+    mine = COOKIE_HOME / str(os.getpid())
+    mine.mkdir(parents=True, exist_ok=True)
+    f = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8", dir=mine)
     f.write("# Netscape HTTP Cookie File\n")
     for c in cookies:
         domain = c["domain"]
@@ -108,23 +119,46 @@ def remove_parts(save_dir, names):
 
 
 def clean_temp(dirs):
-    """Убрать свои недокачанные куски (при выходе)."""
-    for d in dirs:
-        shutil.rmtree(Path(d) / ".tmp" / str(os.getpid()), ignore_errors=True)
+    """Убрать свои недокачанные куски и cookies (при выходе)."""
+    for d in [*(Path(d) / TEMP_NAME for d in dirs), COOKIE_HOME]:
+        shutil.rmtree(d / str(os.getpid()), ignore_errors=True)
+
+
+def _of_running_copy(item):
+    return item.is_dir() and item.name.isdigit() and process_alive(int(item.name))
+
+
+def _sweep(folder, everything):
+    """Убрать из папки то, что осталось от копий, которых уже нет. everything — папка целиком наша: убираем
+    и всё прочее; иначе трогаем только подпапки с номером процесса."""
+    for item in (folder.iterdir() if folder.is_dir() else []):
+        if _of_running_copy(item):
+            continue
+        if item.is_dir() and (everything or item.name.isdigit()):
+            shutil.rmtree(item, ignore_errors=True)
+        elif everything and not item.is_dir():
+            with contextlib.suppress(OSError):  # занят — уберём при следующем запуске
+                item.unlink()
 
 
 def clean_stale_temp(dirs):
-    """Убрать куски, оставшиеся от копий качалки, которых уже нет (при старте). Папки работающих копий не трогаем."""
+    """Убрать куски и cookies, оставшиеся от копий, которых уже нет (при старте). Работающие копии не трогаем."""
+    _sweep(COOKIE_HOME, everything=True)
     for d in dirs:
-        hidden = Path(d) / ".tmp"
-        for item in (hidden.iterdir() if hidden.is_dir() else []):
-            if item.is_dir() and item.name.isdigit() and process_alive(int(item.name)):
-                continue
-            if item.is_dir():
-                shutil.rmtree(item, ignore_errors=True)
-            else:
-                with contextlib.suppress(OSError):  # занят — уберём при следующем запуске
-                    item.unlink()
+        _sweep(Path(d) / TEMP_NAME, everything=True)
+        old = Path(d) / LEGACY_TEMP
+        _sweep(old, everything=False)
+        with contextlib.suppress(OSError):  # не пустая — значит там чужое, пусть лежит
+            old.rmdir()
+
+
+def writable(folder):
+    """Можно ли сохранять в эту папку: пробуем на деле — права Windows иначе надёжно не узнать."""
+    try:
+        with tempfile.TemporaryFile(dir=folder):
+            return True
+    except OSError:
+        return False
 
 
 def probe(path):

@@ -82,6 +82,16 @@ def progress_hook(job_id, job, lg):
     return hook
 
 
+def cancel_hook(job):
+    """Обработчик шагов после скачивания (склейка, вынимание звука): там обработчик прогресса уже молчит,
+    и «Отмена» раньше ждала конца всей обработки. Прерываем перед очередным шагом."""
+    def hook(d):
+        if d.get("status") == "started" and (stopping.is_set() or job.get("cancel")):
+            raise yt_dlp.utils.DownloadCancelled("загрузка отменена" if job.get("cancel") else "качалка закрывается")
+
+    return hook
+
+
 # При равном разрешении берём H.264 + AAC: такой mp4 играет в любом плеере, телевизоре и редакторе.
 # Выше 1080p у YouTube H.264 нет — там останется VP9/AV1, разрешение важнее.
 SORT = ["fps", "hdr:12", "vcodec:h264", "acodec:m4a"]
@@ -139,12 +149,13 @@ def build_opts(job_id, job, cookie_file, lg):
 
     opts = {
         "outtmpl": unique_template(job["title"], job["save_dir"]) if job["sniffed"] else "%(title).150B [%(id)s].%(ext)s",
-        # когда нужен только текст, звуковая дорожка в папку с видео не попадает вовсе — остаётся в .tmp
+        # когда нужен только текст, звуковая дорожка в папку с видео не попадает вовсе — остаётся во временной
         "paths": {"home": str(tmp) if job["mode"] == "text" else job["save_dir"], "temp": str(tmp)},
         "logger": YtdlpLog(lg),
         "verbose": True,
         "noprogress": True,
         "progress_hooks": [progress_hook(job_id, job, lg)],
+        "postprocessor_hooks": [cancel_hook(job)],
         "noplaylist": True,
         "windowsfilenames": True,
         "retries": 10,
@@ -220,7 +231,7 @@ def name_download(ydl, job_id, job, info, n, total, named, names):
     Назначенные имена копим в names: по ним убираются недокачанные куски и временная звуковая дорожка."""
     part = "" if total == 1 else f" — часть {n}"
     name = safe_name(job["title"], keep=part)
-    if job["mode"] == "text":  # сам звук временный и лежит в .tmp под номером задачи; имя нужно только тексту
+    if job["mode"] == "text":  # сам звук временный и лежит во временной папке под номером задачи; имя нужно только тексту
         names.append(f"{job_id}-{n}")
         ydl.params["outtmpl"]["default"] = f"{job_id}-{n}.%(ext)s"
         return safe_name(name if named else f"{info.get('title') or job['title']} [{info.get('id')}]")
