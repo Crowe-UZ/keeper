@@ -40,6 +40,22 @@ class OwnPython(unittest.TestCase):
             self.assertEqual(launcher.runtime(Path(d), "pythonw.exe"), Path(d) / ".venv" / "Scripts" / "pythonw.exe")
 
 
+class LastStepPage(unittest.TestCase):
+    def test_page_shows_the_folder_the_user_actually_chose(self):
+        # папку установки выбирает человек, в том числе с пробелами и кириллицей — на странице должна стоять она
+        with tempfile.TemporaryDirectory() as d:
+            here = Path(d) / "Мои программы" / "Keeper"
+            here.mkdir(parents=True)
+            (here / "next-steps.html").write_text("<code>{{EXTENSION_DIR}}</code>", encoding="utf-8")
+            launcher.write_next_steps(here)
+            self.assertEqual((here / "next-steps.html").read_text(encoding="utf-8"), f"<code>{here / 'extension'}</code>")
+
+    def test_copy_from_the_repository_has_no_such_page(self):
+        with tempfile.TemporaryDirectory() as d:
+            launcher.write_next_steps(Path(d))  # страницы нет — ничего не делаем и не падаем
+            self.assertEqual(list(Path(d).iterdir()), [])
+
+
 class ModelsAhead(unittest.TestCase):
     def run_cli(self, names, **patches):
         out = io.StringIO()

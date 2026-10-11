@@ -47,8 +47,19 @@ def extension_id():
     return digest.translate(str.maketrans("0123456789abcdef", "abcdefghijklmnop"))
 
 
+def write_next_steps(here):
+    """Страница «последний шаг» из установщика: подставить в неё папку, которую человек выбрал при установке.
+    У копии из репозитория такой страницы нет."""
+    import html
+    page = here / "next-steps.html"
+    if page.is_file():
+        text = page.read_text(encoding="utf-8")
+        page.write_text(text.replace("{{EXTENSION_DIR}}", html.escape(str(here / "extension"))), encoding="utf-8")
+
+
 def install():
     import winreg
+    write_next_steps(HERE)
     manifest = HERE / "native_host.json"
     manifest.write_text(json.dumps({
         "name": HOST_NAME,

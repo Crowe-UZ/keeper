@@ -104,6 +104,33 @@ def stage_app():
     shutil.copy2(HERE / "THIRD-PARTY.txt", STAGE / "THIRD-PARTY.txt")
 
 
+def make_art():
+    """Значок и картинки мастера установки — из значка расширения, чтобы установщик выглядел как само расширение."""
+    from PIL import Image
+    art = HERE / "art"
+    art.mkdir(exist_ok=True)
+    icon = Image.open(ROOT / "extension" / "icon.png").convert("RGBA")
+    icon.save(art / "keeper.ico", sizes=[(s, s) for s in (16, 24, 32, 48, 64, 128)])
+
+    def canvas(size, color, icon_side, top):
+        """Картинка заданного размера: фон и значок по центру по ширине."""
+        image = Image.new("RGB", size, color)
+        small = icon.resize((icon_side, icon_side), Image.LANCZOS)
+        image.paste(small, ((size[0] - icon_side) // 2, top), small)
+        return image
+
+    canvas((147, 147), (255, 255, 255), 119, 14).save(art / "small.bmp")   # в углу каждой страницы
+    # полоса слева на первой и последней странице: тёмный фон, значок и название
+    from PIL import ImageDraw, ImageFont
+    side = canvas((410, 797), (24, 24, 37), 128, 250)
+    try:
+        font = ImageFont.truetype(str(Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "segoeuib.ttf"), 52)
+        ImageDraw.Draw(side).text((205, 440), "Keeper", font=font, fill=(255, 255, 255), anchor="mm")
+    except OSError:  # нет такого шрифта — полоса останется без подписи, значка достаточно
+        pass
+    side.save(art / "side.bmp")
+
+
 def check_stage(python):
     """Собранная программа видит свой ffmpeg и свои библиотеки — проверяем до упаковки, а не у пользователя."""
     code = ("import sys; from kachalka import system; from pathlib import Path; "
@@ -133,6 +160,7 @@ def main():
     stage_ffmpeg()
     stage_app()
     check_stage(python)
+    make_art()
     say("упаковываю (несколько минут)…")
     run([iscc, "/Q", f"/DAppVersion={version}", HERE / "keeper.iss"])
     result = OUT / f"Keeper-Setup-{version}.exe"

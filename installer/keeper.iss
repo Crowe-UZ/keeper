@@ -11,7 +11,15 @@ AppName=Keeper
 AppVersion={#AppVersion}
 AppPublisher=Keeper
 DefaultDirName={localappdata}\Keeper
-DisableDirPage=yes
+; первая страница объясняет, что будет установлено; папку человек выбирает сам (при обновлении — прежняя)
+DisableWelcomePage=no
+DisableDirPage=no
+UsePreviousAppDir=yes
+; картинки делает build.py из значка расширения
+SetupIconFile=art\keeper.ico
+WizardSmallImageFile=art\small.bmp
+WizardImageFile=art\side.bmp
+UninstallDisplayIcon={app}\keeper.ico
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
@@ -28,6 +36,12 @@ CloseApplications=no
 [Languages]
 Name: "ru"; MessagesFile: "compiler:Languages\Russian.isl"
 
+[Messages]
+ru.WelcomeLabel1=Установка Keeper
+ru.WelcomeLabel2=Keeper скачивает видео с открытой вкладки Chrome, а ещё звук отдельно и текст того, что в видео говорят.%n%nЧто будет установлено (около 410 МБ на диске):%n%n  •  программа Keeper и расширение для Chrome;%n  •  Python и ffmpeg — свои, внутри папки программы. Если они у тебя уже стоят, их это не затронет;%n  •  по желанию — распознавание речи (выберешь на следующих шагах).%n%nВсё ставится в одну папку, которую ты выберешь дальше. Права администратора не нужны. Удалить можно в «Параметры → Приложения».%n%nПоследний шаг — добавить расширение в Chrome — делается вручную: после установки откроется страница с подсказкой.
+ru.SelectDirLabel3=Keeper будет установлен в эту папку. Сюда же позже скачаются модели распознавания речи (до 660 МБ). Видео сохраняются отдельно — в «Загрузки\Videos», это меняется в окне расширения.
+ru.SelectDirBrowseLabel=Нажми «Далее», чтобы оставить эту папку, или «Обзор», чтобы выбрать другую. Выбирай папку, куда можно записывать без прав администратора (не Program Files).
+
 [Tasks]
 Name: "model_ru"; Description: "Текст на русском — скачать сейчас (170 МБ)"; GroupDescription: "Текст из видео (распознавание речи). Не отметишь — скачается само при первом запросе текста:"
 Name: "model_multi"; Description: "Текст на английском и других европейских языках — скачать сейчас (490 МБ)"; GroupDescription: "Текст из видео (распознавание речи). Не отметишь — скачается само при первом запросе текста:"; Flags: unchecked
@@ -42,6 +56,7 @@ Type: filesandordirs; Name: "{app}\extension"
 
 [Files]
 Source: "stage\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "art\keeper.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Registry]
 ; по этой записи Chrome находит программу; само значение пишет launcher.py --install, здесь — чтобы запись
