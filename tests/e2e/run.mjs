@@ -52,6 +52,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failed = 0;
 const check = (name, ok, extra = "") => { if (!ok) failed++; console.log(`${ok ? "PASS" : "FAIL"}  ${name}${extra ? "  -> " + extra : ""}`); };
 
+// Тест нажимает «Отмена» и «Убрать готовые» в настоящей программе. Если в ней идут чьи-то загрузки, он их
+// отменит и уберёт из списка — так однажды и случилось. Поэтому при непустой очереди не начинаем.
+const queue = await fetch("http://127.0.0.1:5577/status", { headers: { "X-Kachalka": "1" } }).then((r) => r.json()).catch(() => null);
+if (!queue) { console.log("Программа не отвечает — запусти её (start.bat) и повтори."); process.exit(1); }
+if (queue.jobs.length) {
+  console.log(`В программе есть загрузки (${queue.jobs.length}) — тест их отменит и уберёт. Дождись конца, нажми «Убрать готовые» и повтори.`);
+  process.exit(1);
+}
+
 const browser = await puppeteer.launch({
   headless: true,
   pipe: true, enableExtensions: [EXT],

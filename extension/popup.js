@@ -194,7 +194,10 @@ const NAME = { video: "видео", audio: "звук", text: "текст" };
 const FINISHED = /^(готово|ошибка|отменено)/;  // такие «Очистить» убирает из списка
 const CANCELLABLE = ["в очереди", "подготовка", "скачивается", "ждёт распознавания", "загрузка модели", "распознавание"];  // склейку прервать нельзя — она и так секунды
 
-function jobHtml(j) {
+// Строка загрузки состоит из двух частей: сведения (название, проценты, статус) меняются каждую секунду,
+// кнопки — только при смене состояния. Рисуем их по отдельности, чтобы кнопка под курсором или в фокусе
+// клавиатуры не пересоздавалась, пока идёт скачивание.
+function jobParts(j) {
   const busy = j.status === "скачивается";
   const counting = WITH_PERCENT.includes(j.status);
   const want = (j.want || [j.mode]).map((w) => NAME[w]).join(" + ");
@@ -203,22 +206,53 @@ function jobHtml(j) {
   const extra = [j.quality, busy && j.done_mb ? j.done_mb + " МБ" : "", busy ? j.speed : "", eta].filter(Boolean).join(" · ");
   const several = (j.want || []).length > 1;  // одно — понятно по значку; сочетание называем словами
   const cls = done ? "done" : j.error ? "failed" : WAITING.includes(j.status) ? "waiting" : "";
-  return `
-    <div class="job ${cls}">
+  const info = `
       <div class="top">
         <div class="title u" title="${esc(j.title)}">${(j.want || [j.mode]).map((w) => ICON[w]).join("")} ${esc(j.title)}</div>
         <div class="pct">${counting ? j.percent + "%" : ""}</div>
       </div>
       <div class="bar"><div style="width:${j.percent}%"></div></div>
-      <div class="st">${several ? esc(want) + " · " : ""}${esc(STAGE[j.status] || j.status)}${extra ? " · " + esc(extra) : ""}${j.error ? " — " + esc(j.error) : ""}</div>
-      <div class="acts">${
+      <div class="st">${several ? esc(want) + " · " : ""}${esc(STAGE[j.status] || j.status)}${extra ? " · " + esc(extra) : ""}${j.error ? " — " + esc(j.error) : ""}</div>`;
+  const acts = `${
         CANCELLABLE.includes(j.status) ? `<button class="ghost small" data-act="/cancel" data-id="${esc(j.id)}">✕ Отмена</button>` : ""
       }${
         j.error || j.status === "отменено" ? `<button class="ghost small" data-act="/retry" data-id="${esc(j.id)}">↻ Повторить</button>` : ""
       }${
         done && j.has_file ? `<button class="ghost small" data-act="/open-file" data-id="${esc(j.id)}">▶ Открыть файл</button><button class="ghost small" data-act="/show-file" data-id="${esc(j.id)}">📂 Показать в папке</button>` : ""
-      }${j.has_log && (j.error || j.status === "отменено") ? `<button class="ghost small" data-act="/open-log" data-id="${esc(j.id)}" title="Журнал этой загрузки — что именно не получилось">Что пошло не так</button>` : ""}</div>
-    </div>`;
+      }${j.has_log && (j.error || j.status === "отменено") ? `<button class="ghost small" data-act="/open-log" data-id="${esc(j.id)}" title="Журнал этой загрузки — что именно не получилось">Что пошло не так</button>` : ""}`;
+  return { cls: "job " + cls, info, acts };
+}
+
+// Очередь обновляется на месте: у каждой загрузки своя строка, меняется только то, что изменилось
+const rows = new Map();  // номер загрузки -> её строка в окне
+function drawQueue(head, jobs) {
+  const q = $("queue");
+  if (!q._head) {
+    q._head = q.appendChild(document.createElement("div"));
+    q._head.className = "section";
+  }
+  q._head.hidden = !jobs.length;
+  draw(q._head, head);
+  const alive = new Set(jobs.map((j) => j.id));
+  for (const [id, row] of rows) {
+    if (!alive.has(id)) { row.remove(); rows.delete(id); }
+  }
+  let before = q._head;
+  for (const j of jobs) {
+    let row = rows.get(j.id);
+    if (!row) {
+      row = document.createElement("div");
+      row.append(document.createElement("div"), document.createElement("div"));
+      row.lastChild.className = "acts";
+      rows.set(j.id, row);
+    }
+    const p = jobParts(j);
+    if (row.className !== p.cls) row.className = p.cls;
+    draw(row.firstChild, p.info);
+    draw(row.lastChild, p.acts);
+    if (before.nextSibling !== row) before.after(row);  // порядок как в ответе программы: новые сверху
+    before = row;
+  }
 }
 
 async function refresh() {
@@ -237,8 +271,7 @@ async function refresh() {
   $("ver").textContent = `v${chrome.runtime.getManifest().version} · yt-dlp ${ytdlp}`;
   const counts = [s.active ? `качается ${s.active}` : "", s.queued ? `в очереди ${s.queued}` : "", s.done ? `готово ${s.done}` : "", s.failed ? `ошибок ${s.failed}` : ""]
     .filter(Boolean).join(" · ");
-  draw($("queue"), !jobs.length ? "" : `<div class="section">Загрузки<span class="u">${counts}</span>${jobs.some((j) => FINISHED.test(j.status)) ? '<button class="ghost small" data-act="/clear" title="Убрать из списка готовые и неудавшиеся (файлы остаются)">Убрать готовые</button>' : ""}</div>`
-    + jobs.map(jobHtml).join(""));
+  drawQueue(`Загрузки<span class="u">${counts}</span>${jobs.some((j) => FINISHED.test(j.status)) ? '<button class="ghost small" data-act="/clear" title="Убрать из списка готовые и неудавшиеся (файлы остаются)">Убрать готовые</button>' : ""}`, jobs);
 }
 
 // Всё, что что-то меняет или открывает, шлём методом POST: у такого запроса браузер указывает отправителя,
@@ -320,6 +353,8 @@ $("chooseFolder").onclick = () => run(async () => {
     if (r.error) $("err").textContent = r.error;  // папка не подошла или окно уже открыто
   } finally { $("chooseFolder").textContent = "Сменить"; }
 });
+
+if (web) $("go").focus();  // окно открыли — Enter сразу качает, Tab ведёт по остальным кнопкам
 
 const scan = () => chrome.runtime.sendMessage({ type: "scan", tabId: tab.id }).catch(() => {});
 refresh();
