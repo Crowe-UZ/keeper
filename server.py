@@ -1,6 +1,7 @@
 """Локальный сервер-качалка: принимает ссылку от расширения Chrome и скачивает через yt-dlp.
 
-Запуск: start.bat
+Запуск: её поднимает само расширение (launcher.py, после install.bat) — без окна, со значком в трее;
+start.bat — запасной способ, с окном.
 Слушает только 127.0.0.1 и принимает запросы только от расширений Chrome.
 
 Два вида задач:
@@ -40,9 +41,20 @@ SETTINGS_FILE = Path(__file__).resolve().parent / "settings.json"
 DEFAULT_SAVE_DIR = Path.home() / "Downloads" / "Videos"
 
 
+def load_settings():
+    try:
+        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_settings(**fields):
+    SETTINGS_FILE.write_text(json.dumps({**load_settings(), **fields}, ensure_ascii=False), encoding="utf-8")
+
+
 def load_save_dir():
     try:
-        d = Path(json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))["save_dir"])
+        d = Path(load_settings()["save_dir"])
         if d.is_dir():
             return d
     except Exception:
@@ -65,6 +77,13 @@ def temp_dir(save_dir):
 SAVE_DIR = load_save_dir()  # текущая папка; меняется кнопкой «Сменить папку», задача запоминает свою
 SAVE_DIR.mkdir(parents=True, exist_ok=True)
 WORKERS = 3  # сколько видео качается одновременно, остальные ждут в очереди
+AUTO = "--auto" in sys.argv  # запущена расширением: без окна, сама закрывается, когда нечего делать
+IDLE_EXIT = 10 * 60  # секунд без загрузок и без открытого окна расширения
+ICON = Path(__file__).resolve().parent / "extension" / "icon.png"
+NO_WINDOW = subprocess.CREATE_NO_WINDOW  # без окна у качалки нет консоли — чтобы ffprobe и прочие не мигали чёрным окном
+
+if sys.stdout is None:  # pythonw: консоли нет вообще, а yt-dlp и print в неё пишут
+    sys.stdout = sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
 LOG_DIR = Path(__file__).resolve().parent / "logs"
 JOB_LOG_DIR = LOG_DIR / "jobs"
@@ -84,6 +103,9 @@ log.addHandler(_console)
 jobs = {}  # id -> данные задачи (см. do_POST)
 lock = threading.Lock()
 tasks = queue.Queue()
+stopping = threading.Event()  # качалка закрывается: загрузки прервать, новые не начинать
+last_activity = time.time()  # когда расширение последний раз что-то спрашивало
+tray = None
 
 
 def find_ffmpeg():
@@ -103,7 +125,7 @@ JS_RUNTIMES = {name: {"path": None} for name in ("deno", "node") if shutil.which
 
 def tool_version(cmd):
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=10, creationflags=NO_WINDOW).stdout
         return out.splitlines()[0].strip() if out else "?"
     except Exception as e:
         return f"не найден ({e.__class__.__name__})"
@@ -179,7 +201,7 @@ def probe(path):
             [str(Path(FFMPEG_DIR) / "ffprobe"), "-v", "error", "-show_entries",
              "stream=codec_type,codec_name,width,height,r_frame_rate,bit_rate:format=duration,size,bit_rate",
              "-of", "json", path],
-            capture_output=True, text=True, timeout=30, encoding="utf-8")
+            capture_output=True, text=True, timeout=30, encoding="utf-8", creationflags=NO_WINDOW)
         return json.loads(out.stdout)
     except Exception as e:
         return {"error": repr(e)}
@@ -269,6 +291,8 @@ def build_opts(job_id, job, cookie_file, lg):
     last_log = {"t": 0}
 
     def hook(d):
+        if stopping.is_set():
+            raise yt_dlp.utils.DownloadCancelled("качалка закрывается")
         if d["status"] == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate")
             speed = re.sub(r"\x1b\[[0-9;]*m", "", d.get("_speed_str") or "").strip()  # без цветовых кодов терминала
@@ -438,7 +462,7 @@ def run_download(job_id):
                 return
             except Exception as e:
                 lg.warning(f"попытка {i + 1} не удалась: {e}\n{traceback.format_exc()}")
-                if i == len(attempts) - 1:
+                if i == len(attempts) - 1 or stopping.is_set():
                     raise
                 log.info(f"[{job_id}] без cookies не вышло, пробую с cookies")
     except Exception as e:  # yt-dlp бросает разные исключения, показываем понятный текст
@@ -494,7 +518,8 @@ def worker():
     while True:
         job_id = tasks.get()
         try:
-            run_download(job_id)
+            if not stopping.is_set():
+                run_download(job_id)
         except Exception:
             log.exception(f"[{job_id}] непредвиденный сбой обработчика")
         finally:
@@ -519,6 +544,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "OPTIONS" and self.headers.get("X-Kachalka") != "1":
             log.warning(f"отклонён запрос {self.command} {self.path}: нет заголовка расширения (Origin={origin!r})")
             return False
+        global last_activity
+        last_activity = time.time()
         return True
 
     def _send(self, code, data):
@@ -622,7 +649,7 @@ class Handler(BaseHTTPRequestHandler):
         if not chosen:
             return self._send(200, {"folder": str(SAVE_DIR), "changed": False})
         SAVE_DIR = Path(chosen)
-        SETTINGS_FILE.write_text(json.dumps({"save_dir": str(SAVE_DIR)}, ensure_ascii=False), encoding="utf-8")
+        save_settings(save_dir=str(SAVE_DIR))
         log.info(f"папка для видео изменена: {SAVE_DIR}")
         return self._send(200, {"folder": str(SAVE_DIR), "changed": True})
 
@@ -650,6 +677,98 @@ class Handler(BaseHTTPRequestHandler):
         pass  # стандартный шумный лог каждого HTTP-запроса не нужен
 
 
+# ---------- значок в трее и завершение ----------
+
+def status_line():
+    s = summary()
+    if s["active"] or s["queued"]:
+        return f"Качается: {s['active']} · в очереди: {s['queued']}"
+    return "Загрузок нет"
+
+
+def run_tray():
+    """Значок у часов: видно, что качалка работает, и есть откуда её закрыть."""
+    global tray
+    try:
+        import pystray
+        from PIL import Image
+        menu = pystray.Menu(
+            pystray.MenuItem(lambda _: status_line(), None, enabled=False),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Папка с видео", lambda: os.startfile(SAVE_DIR), default=True),
+            pystray.MenuItem("Логи", lambda: os.startfile(LOG_DIR)),
+            pystray.MenuItem("Выход", lambda: shutdown("выход из меню в трее")),
+        )
+        tray = pystray.Icon("kachalka", Image.open(ICON), "Качалка видео", menu)
+    except Exception as e:
+        return log.warning(f"значок в трее недоступен ({e!r}) — работаю без него")
+    threading.Thread(target=tray_status, daemon=True).start()
+    tray.run()
+
+
+def tray_status():
+    shown = None
+    while True:
+        time.sleep(2)
+        line = status_line()
+        if line != shown:
+            shown = line
+            tray.title = "Качалка видео — " + line.lower()
+            tray.update_menu()
+
+
+def idle_watch():
+    """Запущенная расширением качалка не висит в памяти зря: нет дел 10 минут — закрывается."""
+    global last_activity
+    while True:
+        time.sleep(15)
+        s = summary()
+        if s["active"] or s["queued"]:
+            last_activity = time.time()
+        elif time.time() - last_activity > IDLE_EXIT:
+            shutdown(f"{IDLE_EXIT // 60} минут без дела")
+
+
+def kill_children():
+    """ffmpeg, запущенный для склейки, сам не остановится — а его недоделанный файл держит папку .tmp."""
+    ps = (f"Get-CimInstance Win32_Process -Filter \"ParentProcessId={os.getpid()} and Name like 'ff%'\" "
+          "| ForEach-Object { Stop-Process -Id $_.ProcessId -Force }")
+    try:
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, timeout=15,
+                       creationflags=NO_WINDOW)
+    except Exception as e:
+        log.warning(f"не смог остановить ffmpeg: {e!r}")
+
+
+def clean_temp(dirs):
+    for d in dirs:
+        shutil.rmtree(Path(d) / ".tmp", ignore_errors=True)
+
+
+def shutdown(reason):
+    """Закрыться чисто: прервать загрузки, убрать недокачанные куски, снять значок."""
+    if stopping.is_set():
+        return
+    stopping.set()
+    interrupted = summary()["active"]
+    log.info(f"Качалка закрывается: {reason}" + (f" (прервано загрузок: {interrupted})" if interrupted else ""))
+    deadline = time.time() + 5
+    while summary()["active"] and time.time() < deadline:
+        time.sleep(0.2)
+    if interrupted:
+        kill_children()
+    with lock:
+        dirs = {v["save_dir"] for v in jobs.values()} | {str(SAVE_DIR)}
+    clean_temp(dirs)
+    if tray:
+        try:
+            tray.stop()
+        except Exception:
+            pass
+    logging.shutdown()
+    os._exit(0)
+
+
 def _thread_crash(args):
     log.error(f"СБОЙ ПОТОКА {args.thread.name if args.thread else '?'}: {args.exc_type.__name__}: {args.exc_value}",
               exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
@@ -658,21 +777,30 @@ def _thread_crash(args):
 threading.excepthook = _thread_crash  # любые падения фоновых потоков — в kachalka.log
 
 if __name__ == "__main__":
-    for _ in range(WORKERS):
-        threading.Thread(target=worker, daemon=True).start()
-    threading.Thread(target=reporter, daemon=True).start()
     try:
         server = ThreadingHTTPServer((HOST, PORT), Handler)
     except OSError as e:
-        log.error(f"Не могу занять порт {PORT}: {e}. Похоже, качалка уже запущена в другом окне.")
+        log.error(f"Не могу занять порт {PORT}: {e}. Похоже, качалка уже запущена.")
         sys.exit(1)
+    clean_temp([SAVE_DIR])  # куски от прошлого запуска, если его закрыли грубо
+    for _ in range(WORKERS):
+        threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=reporter, daemon=True).start()
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    threading.Thread(target=run_tray, daemon=True).start()
+    if AUTO:
+        threading.Thread(target=idle_watch, daemon=True).start()
     env = environment()
-    log.info(f"Качалка запущена: http://{HOST}:{PORT}")
+    log.info(f"Качалка запущена: http://{HOST}:{PORT}" + (" (расширением, закроется сама)" if AUTO else ""))
     log.info(f"Файлы: {SAVE_DIR} | Логи: {LOG_DIR}")
     log.info(f"yt-dlp {env['yt-dlp']} | Python {env['python']} | одновременно качается: {WORKERS}")
     log.info(f"ffmpeg: {env['ffmpeg']}")
     log.info(f"JS-движок для YouTube: {env['js']}")
     if not FFMPEG_DIR:
         log.warning("ffmpeg НЕ НАЙДЕН — качество будет хуже, mp3 недоступен")
-    print("Окно не закрывать. Остановить: Ctrl+C")
-    server.serve_forever()
+    print("Остановить: Ctrl+C или «Выход» в меню значка у часов")
+    try:
+        while True:
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        shutdown("Ctrl+C")

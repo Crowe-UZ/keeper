@@ -3,57 +3,107 @@
 <head>
 <meta charset="utf-8">
 <style>
-  body { width: 380px; margin: 0; padding: 12px; font: 13px system-ui, sans-serif; background: #1e1e24; color: #eee; }
-  h1 { font-size: 15px; margin: 0 0 4px; }
-  .tab { color: #aaa; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 8px; }
-  .row { display: flex; gap: 6px; margin: 8px 0; }
-  button { flex: 1; padding: 8px; border: 0; border-radius: 6px; cursor: pointer; font-weight: 600; background: #3b82f6; color: #fff; }
-  button.alt { background: #4b5563; }
-  button.small { flex: 0 0 auto; padding: 4px 8px; font-size: 12px; }
+  :root {
+    --bg: #16161b; --card: #212129; --card-hover: #292933; --line: #30303b;
+    --text: #ededf2; --muted: #9c9cab; --accent: #6d5efc; --accent-2: #3b82f6;
+    --ok: #34d399; --bad: #f87171; --warn: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  body { width: 400px; margin: 0; padding: 14px; font: 13px/1.4 "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  .u { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+  header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  header img { width: 32px; height: 32px; }
+  header .names { flex: 1; min-width: 0; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0; }
+  .tab { color: var(--muted); font-size: 12px; }
+  .state { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); padding: 3px 8px; border-radius: 99px; background: var(--card); cursor: default; }
+  .state i { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  .state.on i { background: var(--ok); }
+  .state.starting i { background: var(--warn); animation: blink 1s infinite; }
+  .state.off { cursor: pointer; }
+  .state.off i { background: var(--bad); }
+  @keyframes blink { 50% { opacity: .3; } }
+
+  button { border: 0; border-radius: 8px; cursor: pointer; font: inherit; font-weight: 600; color: #fff; background: var(--card); padding: 7px 10px; transition: filter .15s, background .15s; }
   button:hover { filter: brightness(1.15); }
-  #err { color: #f87171; margin: 6px 0; }
-  .note { font-size: 12px; color: #aaa; margin: 4px 0; }
-  .warn { color: #fbbf24; }
-  .section { font-size: 12px; color: #aaa; text-transform: uppercase; margin: 10px 0 4px; }
-  .item { display: flex; align-items: center; gap: 6px; padding: 4px 0; }
-  .item .u { flex: 1; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #ccc; }
-  .tag { font-size: 11px; padding: 1px 5px; border-radius: 4px; background: #374151; }
-  .tag.best { background: #166534; }
-  .job { padding: 6px 0; border-top: 1px solid #333; }
-  .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .bar { height: 4px; background: #333; border-radius: 2px; margin-top: 4px; }
-  .bar > div { height: 100%; background: #22c55e; border-radius: 2px; transition: width .3s; }
-  .st { color: #aaa; font-size: 12px; margin-top: 2px; }
-  .bad { color: #f87171; }
-  .loglink { color: #60a5fa; cursor: pointer; text-decoration: underline; font-size: 12px; }
-  .folder { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #ccc; margin: 4px 0; }
-  .folder .u { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
-  .ver { color: #666; font-size: 11px; margin-top: 8px; }
+  button:active { transform: translateY(1px); }
+  button.primary { background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
+  button.ghost { background: transparent; color: var(--muted); font-weight: 500; padding: 5px 8px; }
+  button.ghost:hover { background: var(--card); color: var(--text); filter: none; }
+  button.small { padding: 5px 9px; font-size: 12px; }
+  .main { display: flex; gap: 8px; }
+  .main button { flex: 1; padding: 11px; font-size: 14px; }
+  .main #audio { flex: 0 0 34%; }
+
+  .folder { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin: 10px 0 0; padding: 4px 4px 4px 10px; background: var(--card); border-radius: 8px; }
+  .folder .u { flex: 1; direction: rtl; text-align: left; }
+  .note { font-size: 12px; color: var(--muted); margin: 10px 2px 0; }
+  .warn { color: var(--warn); }
+  #err { color: var(--bad); font-size: 12px; margin: 8px 2px 0; }
+  #err:empty { display: none; }
+
+  .section { display: flex; align-items: baseline; gap: 8px; font-size: 11px; letter-spacing: .06em; color: var(--muted); text-transform: uppercase; margin: 16px 2px 6px; }
+  .section span { flex: 1; text-transform: none; letter-spacing: 0; font-size: 12px; }
+  .section button { margin: -4px -6px -4px 0; }
+
+  .item { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+  .item .u { flex: 1; font-size: 12px; color: var(--muted); }
+  .item.video { padding: 8px 8px 8px 10px; margin-bottom: 6px; background: var(--card); border-radius: 10px; border: 1px solid transparent; }
+  .item.video:hover { background: var(--card-hover); border-color: var(--accent); }
+  .item.video .name { font-weight: 600; white-space: nowrap; }
+  .item.video.playing .name::before { content: "▶ "; color: var(--ok); }
+  .tag { font-size: 11px; padding: 1px 6px; border-radius: 5px; background: var(--line); white-space: nowrap; }
+  .tag.best { background: #14532d; color: #bbf7d0; }
+  details { margin-top: 2px; }
+  summary { font-size: 12px; color: var(--muted); cursor: pointer; padding: 2px; }
+
+  .job { padding: 9px 10px; margin-bottom: 6px; background: var(--card); border-radius: 10px; }
+  .job .top { display: flex; gap: 8px; align-items: baseline; }
+  .job .title { flex: 1; }
+  .job .pct { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .bar { height: 4px; background: var(--line); border-radius: 2px; margin: 7px 0 6px; overflow: hidden; }
+  .bar > div { height: 100%; border-radius: 2px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .4s; }
+  .job.done .bar > div { background: var(--ok); }
+  .job.failed .bar > div { background: var(--bad); width: 100% !important; }
+  .job.waiting .bar > div { width: 35% !important; animation: slide 1.2s infinite ease-in-out; }
+  @keyframes slide { from { margin-left: -35%; } to { margin-left: 100%; } }
+  .st { color: var(--muted); font-size: 12px; }
+  .job.failed .st { color: var(--bad); }
+  .acts { display: flex; gap: 2px; margin: 4px 0 -3px -8px; }
+  .acts:empty { display: none; }
+
+  footer { display: flex; align-items: center; gap: 2px; margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line); }
+  .ver { margin-left: auto; color: #5d5d6b; font-size: 11px; }
 </style>
 </head>
 <body>
-  <h1>Качалка видео</h1>
-  <div class="tab" id="tabTitle"></div>
-  <div class="row">
-    <button id="video">⬇ Видео</button>
-    <button id="audio" class="alt">🎵 Звук</button>
+  <header>
+    <img src="icon.png" alt="">
+    <div class="names">
+      <h1>Качалка видео</h1>
+      <div class="tab u" id="tabTitle"></div>
+    </div>
+    <div class="state" id="state"><i></i><span id="stateText">…</span></div>
+  </header>
+  <div class="main">
+    <button id="video" class="primary">⬇ Видео</button>
+    <button id="audio">🎵 Звук</button>
   </div>
   <div class="folder">
     <span>📁</span><span id="folderPath" class="u"></span>
-    <button id="chooseFolder" class="small alt">Сменить</button>
+    <button id="folder" class="ghost small">Открыть</button>
+    <button id="chooseFolder" class="ghost small">Сменить</button>
   </div>
   <div id="hint" class="note"></div>
-  <div id="caught"></div>
-  <div class="row">
-    <button id="all" class="alt">Все вкладки</button>
-    <button id="folder" class="alt">Папка</button>
-    <button id="logs" class="alt">Логи</button>
-    <button id="clear" class="alt">Очистить</button>
-  </div>
   <div id="err"></div>
-  <div id="summary" class="note" style="color:#eee;font-weight:600"></div>
-  <div id="jobs"></div>
-  <div class="ver" id="ver"></div>
+  <div id="caught"></div>
+  <div id="queue"></div>
+  <footer>
+    <button id="all" class="ghost small">Все вкладки</button>
+    <button id="logs" class="ghost small">Логи</button>
+    <span class="ver" id="ver"></span>
+  </footer>
   <script type="module" src="popup.js"></script>
 </body>
 </html>

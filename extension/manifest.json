@@ -1,9 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Качалка видео",
-  "version": "2.1",
+  "version": "3.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArJv/70QiVa/JaUnzxLLAo0sBVe8N82myv155AH+uaA1K2HgW/GO2/i5MbXvgmfGs6Tn6QAhTIUw5R+jmWiyjWUDwBEIiwj6fLEn1jvnakevGRKGIM+SAvkLXYmvzvzgJKadjOtyO2bx/26fCCj+/waEdb5NLT2Ebnj4cLFTK3Xv7o1YDjrZrI+BT0IkBLjTpfdKP7ldsLMv1TAINhITSHkhopkGHmVaRF29wX0oMZ12eIkmH/9dqRCp5od1b1vfq1o4VRzQM7DZNVh/HNbI3DZpDcePrwCIuKAjivO3Fcp1afdnTNL6UtuuuTb8SZ4aptwJx9LS6XcOpcgB018bfrwIDAQAB",
   "description": "Скачивает видео с любой вкладки: YouTube и 1000+ сайтов через yt-dlp, курсы и плееры — через перехват видеопотока",
-  "permissions": ["tabs", "scripting", "cookies", "webRequest", "storage", "contextMenus", "notifications"],
+  "permissions": ["tabs", "scripting", "cookies", "webRequest", "storage", "contextMenus", "notifications", "nativeMessaging"],
   "host_permissions": ["<all_urls>"],
   "icons": { "128": "icon.png" },
   "action": { "default_popup": "popup.html", "default_title": "Скачать видео", "default_icon": "icon.png" },

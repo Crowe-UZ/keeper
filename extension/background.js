@@ -1,4 +1,4 @@
-import { buildJob, send, getCaught, clientLog, PLAYER, SIGN_PLAYER_RE } from "./common.js";
+import { buildJob, buildJobs, send, getCaught, clientLog, norm, itemKey, PLAYER, SIGN_PLAYER_RE } from "./common.js";
 
 self.addEventListener("error", (e) => clientLog(`фон: ${e.message} @ ${e.filename}:${e.lineno}`));
 self.addEventListener("unhandledrejection", (e) => clientLog(`фон (promise): ${e.reason?.stack || e.reason}`));
@@ -30,7 +30,7 @@ chrome.webRequest.onHeadersReceived.addListener((d) => {
   if (DRM_RE.test(d.url) && d.method === "POST") return void markDrm(d.tabId);
 
   if (d.type === "sub_frame" && SIGN_PLAYER_RE.test(d.url)) {
-    return void addItem(d.tabId, { url: d.url, kind: PLAYER, headers: reqHeaders.get(d.requestId) || {}, time: Date.now(), master: false });
+    return void addItem(d.tabId, { url: d.url, kind: PLAYER, frameId: d.frameId, headers: reqHeaders.get(d.requestId) || {}, time: Date.now(), master: false });
   }
 
   const type = (d.responseHeaders || []).find((h) => h.name.toLowerCase() === "content-type")?.value?.toLowerCase() || "";
@@ -41,7 +41,7 @@ chrome.webRequest.onHeadersReceived.addListener((d) => {
   if (!kind) return;
 
   const headers = reqHeaders.get(d.requestId) || {};
-  addItem(d.tabId, { url: d.url, kind, headers, time: Date.now(), master: false }).then(() => {
+  addItem(d.tabId, { url: d.url, kind, frameId: d.frameId, headers, time: Date.now(), master: false }).then(() => {
     if (kind === "HLS") checkMaster(d.tabId, d.url, headers);
   });
 }, { urls: ["<all_urls>"] }, ["responseHeaders"]);
@@ -52,20 +52,23 @@ function mutate(tabId, fn) {
   chain = chain.then(async () => {
     const data = await getCaught(tabId);
     fn(data);
-    data.items = data.items.slice(-30);
+    data.items = data.items.slice(-150);
     await chrome.storage.session.set({ ["tab_" + tabId]: data });
     updateBadge(tabId, data);
   }).catch(() => {});
   return chain;
 }
 
+// fresh=false — поток найден в разметке, а не в сети: свежую ссылку и заголовки уже пойманного не трогаем
+function upsert(data, item, fresh = true) {
+  const old = data.items.find((i) => itemKey(i) === itemKey(item));
+  if (!old) return void data.items.push({ ...item, first: item.time });
+  if (item.frameId != null) old.frameId = item.frameId;
+  if (fresh) Object.assign(old, { url: item.url, time: item.time, headers: item.headers });
+}
+
 function addItem(tabId, item) {
-  const norm = (u) => u.split("?")[0];
-  return mutate(tabId, (data) => {
-    const old = data.items.find((i) => norm(i.url) === norm(item.url));
-    if (old) Object.assign(old, { url: item.url, time: item.time, headers: item.headers });
-    else data.items.push(item);
-  });
+  return mutate(tabId, (data) => upsert(data, item));
 }
 
 function markDrm(tabId) {
@@ -79,9 +82,14 @@ async function checkMaster(tabId, url) {
     const master = text.includes("#EXT-X-STREAM-INF");
     // обычное AES-128 шифрование HLS — не DRM, его yt-dlp снимает сам; DRM — это Widevine/FairPlay/PlayReady
     const drm = /#EXT-X-(SESSION-)?KEY:.*KEYFORMAT="(urn:uuid|com\.apple\.streamingkeydelivery|com\.microsoft)/i.test(text);
+    // плейлисты качеств из мастера — чтобы понимать, что они про то же видео
+    const uris = [...text.split(/\r?\n/).filter((l) => l.trim() && !l.startsWith("#")), ...[...text.matchAll(/URI="([^"]+)"/g)].map((m) => m[1])];
+    const variants = !master ? [] : uris.map((u) => {
+      try { return norm(new URL(u.trim(), url).href); } catch { return null; }
+    }).filter(Boolean);
     await mutate(tabId, (data) => {
       const it = data.items.find((i) => i.url === url);
-      if (it) it.master = master;
+      if (it) Object.assign(it, { master, variants });
       if (drm) data.drm = true;
     });
   } catch (e) {
@@ -103,23 +111,45 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
 chrome.tabs.onRemoved.addListener((tabId) => chrome.storage.session.remove("tab_" + tabId));
 
 // Страница могла открыться до установки расширения — тогда перехват её пропустил.
-// По запросу окна ищем плееры прямо в разметке страницы.
+// По запросу окна ищем плееры прямо в разметке страницы — во всех её фреймах.
+// Заодно узнаём про каждый фрейм: какой он по счёту на странице, длительность видео, играет ли оно.
 async function scanTab(tabId) {
   try {
-    const [{ result }] = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: () => [...document.querySelectorAll("iframe, video, source")]
-        .map((e) => e.src || e.dataset?.src || "")
-        .filter((u) => /^https?:/.test(u)),
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => {
+        const srcs = (sel) => [...document.querySelectorAll(sel)]
+          .map((e) => e.src || e.dataset?.src || "")
+          .filter((u) => /^https?:/.test(u));
+        const videos = [...document.querySelectorAll("video")];
+        const v = videos.find((x) => !x.paused) || videos[0];
+        return {
+          href: location.href,
+          iframes: srcs("iframe"),
+          media: srcs("video, source"),
+          duration: v && isFinite(v.duration) ? Math.round(v.duration) : 0,
+          playing: !!v && !v.paused,
+        };
+      },
     });
-    for (const url of result || []) {
-      if (SIGN_PLAYER_RE.test(url)) {
-        await addItem(tabId, { url, kind: PLAYER, headers: {}, time: Date.now(), master: false });
-      } else if (/\.(m3u8|mpd|mp4|webm)(\?|#|$)/i.test(url)) {
-        const kind = /\.m3u8/i.test(url) ? "HLS" : /\.mpd/i.test(url) ? "DASH" : "Файл";
-        await addItem(tabId, { url, kind, headers: {}, time: Date.now(), master: false });
+    const order = results.find((r) => r.frameId === 0)?.result?.iframes || [];
+    const frames = {};
+    const found = [];
+    const add = (url, kind, frameId) => found.push({ url, kind, frameId, headers: {}, time: Date.now(), master: false });
+    for (const { frameId, result: r } of results) {
+      if (!r) continue;
+      frames[frameId] = { href: r.href, duration: r.duration, playing: r.playing, order: order.indexOf(r.href) };
+      if (frameId && SIGN_PLAYER_RE.test(r.href)) add(r.href, PLAYER, frameId);
+      for (const url of r.iframes) if (SIGN_PLAYER_RE.test(url)) add(url, PLAYER);
+      for (const url of r.media) {
+        if (!/\.(m3u8|mpd|mp4|webm)(\?|#|$)/i.test(url)) continue;
+        add(url, /\.m3u8/i.test(url) ? "HLS" : /\.mpd/i.test(url) ? "DASH" : "Файл", frameId);
       }
     }
+    await mutate(tabId, (data) => {
+      data.frames = frames;
+      for (const item of found) upsert(data, item, false);
+    });
   } catch (e) {
     console.log("[качалка] не смог просканировать вкладку", tabId, e);
   }
@@ -143,12 +173,12 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     if (info.menuItemId === "dl-link") {
       await send(await buildJob({ ...tab, url: info.linkUrl || info.srcUrl, id: -1 }, "video"));
     } else {
-      await send(await buildJob(tab, "video"));
+      for (const job of await buildJobs(tab, "video")) await send(job);
     }
     notify("Скачивание началось", tab.title);
   } catch (e) {
-    if (e instanceof TypeError) notify("Качалка не отвечает", "Запусти start.bat в папке download_web");
-    else { notify("Ошибка", e.message); clientLog(`меню: ${e.stack || e}`); }
+    notify("Не получилось скачать", e.message);
+    clientLog(`меню: ${e.stack || e}`);
   }
 });
 

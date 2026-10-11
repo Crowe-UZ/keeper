@@ -4,6 +4,41 @@ export const API = "http://127.0.0.1:5577";
 export const HEADERS = { "Content-Type": "application/json", "X-Kachalka": "1" };
 export const api = (path, opts = {}) => fetch(API + path, { ...opts, headers: HEADERS });
 
+// fetch бросает TypeError, когда качалка не запущена (соединиться не с кем)
+export const isDown = (e) => e instanceof TypeError;
+
+// Расширение само программу запустить не может — просим Chrome позвать launcher.py (его прописывает install.bat),
+// тот поднимает качалку в фоне. Ждём, пока она начнёт отвечать
+const NATIVE_HOST = "com.kachalka.host";
+let starting = null;
+export function startServer() {
+  starting ||= (async () => {
+    let r;
+    try {
+      r = await chrome.runtime.sendNativeMessage(NATIVE_HOST, { cmd: "start" });
+    } catch (e) {
+      throw new Error(`Качалка не установлена: запусти install.bat в папке download_web и перезагрузи расширение (${e.message})`);
+    }
+    if (!r?.ok) throw new Error("Качалка не запустилась: " + (r?.error || "причина в logs\\launcher.log"));
+    for (let i = 0; i < 60; i++) {
+      try { await api("/status"); return; } catch { await new Promise((ok) => setTimeout(ok, 250)); }
+    }
+    throw new Error("Качалка не запустилась — посмотри logs\\kachalka.log в папке download_web");
+  })().finally(() => { starting = null; });
+  return starting;
+}
+
+// То же, что api, но если качалка спит — сначала будит её
+export async function apiUp(path, opts) {
+  try {
+    return await api(path, opts);
+  } catch (e) {
+    if (!isDown(e)) throw e;
+    await startServer();
+    return api(path, opts);
+  }
+}
+
 export const PLAYER = "Плеер GetCourse";
 // iframe плеера GetCourse: адрес плеера меняется, путь — нет
 export const SIGN_PLAYER_RE = /\/sign-player\/?\?(?:[^#]*&)?json=/;
@@ -24,7 +59,45 @@ export function isKnownSite(url) {
 
 export async function getCaught(tabId) {
   const key = "tab_" + tabId;
-  return (await chrome.storage.session.get(key))[key] || { items: [], drm: false };
+  return (await chrome.storage.session.get(key))[key] || { items: [], drm: false, frames: {} };
+}
+
+export const norm = (u) => u.split("?")[0];
+// Один и тот же поток запрашивается много раз с разными токенами — сравниваем без них.
+// Плееры GetCourse отличаются только параметром json=, их сравниваем целиком
+export const itemKey = (i) => (i.kind === PLAYER ? i.url : norm(i.url));
+
+// Потоки вкладки -> отдельные видео. Каждый плеер живёт в своём iframe: один iframe = одно видео.
+// Видео прямо на странице (без iframe) делим по мастер-плейлистам: качества мастера — то же видео.
+// Порядок — как плееры идут на странице, иначе — в каком порядке поймали
+export function groupVideos(caught) {
+  const frames = caught.frames || {};
+  const masters = caught.items.filter((i) => i.master && !i.frameId);
+  const groups = new Map();
+  for (const it of caught.items) {
+    let key = "f" + it.frameId;
+    if (!it.frameId) {
+      const m = it.kind === "HLS" && !it.master && masters.find((m) => m.variants?.includes(norm(it.url)));
+      key = "u" + itemKey(m || it);
+    }
+    if (!groups.has(key)) groups.set(key, { frameId: it.frameId || 0, items: [] });
+    groups.get(key).items.push(it);
+  }
+  const all = [...groups.values()];
+  const onPage = all.filter((g) => !g.frameId).length;
+  return all.map((g) => {
+    const meta = g.frameId ? frames[g.frameId] : onPage === 1 ? frames[0] : null;
+    return {
+      ...g,
+      best: pickBest(g.items),
+      duration: meta?.duration || 0,
+      playing: !!meta?.playing,
+      // адрес iframe плеера — чтобы подсветить его на странице
+      src: g.frameId ? meta?.href : g.items.find((i) => i.kind === PLAYER)?.url,
+      order: g.frameId && meta?.order >= 0 ? meta.order : Infinity,
+      first: Math.min(...g.items.map((i) => i.first ?? i.time)),
+    };
+  }).sort((a, b) => (a.order - b.order) || (a.first - b.first));
 }
 
 // Лучший пойманный поток: мастер-плейлист HLS (все качества) > плеер GetCourse > DASH > любой m3u8 > файл;
@@ -44,18 +117,18 @@ async function cookiesFor(urls) {
 }
 
 // Что качать для вкладки: известный сайт -> ссылка страницы; иначе пойманный поток; иначе всё равно страница
-export async function buildJob(tab, mode, item) {
+export async function buildJob(tab, mode, item, { title, why } = {}) {
   const caught = await getCaught(tab.id);
   const known = isKnownSite(tab.url);
   const chosen = item || (!known && caught.items.length ? pickBest(caught.items) : null);
   const urls = chosen ? [tab.url, chosen.url] : [tab.url];
-  const reason = item ? "выбран вручную из списка"
+  const reason = item ? why || "выбран вручную из списка"
     : chosen ? "лучший пойманный поток"
     : known ? "известный сайт — качаем по ссылке страницы"
     : "потоков не поймано — отдаём ссылку страницы yt-dlp";
   return {
     url: chosen ? chosen.url : tab.url,
-    title: tab.title,
+    title: title || tab.title,
     page_url: tab.url,
     mode,
     sniffed: !!chosen,
@@ -66,9 +139,28 @@ export async function buildJob(tab, mode, item) {
       reason,
       extension: chrome.runtime.getManifest().version,
       drm_suspected: caught.drm,
-      caught: caught.items.map(({ url, kind, master, time }) => ({ url, kind, master, time: new Date(time).toISOString() })),
+      caught: caught.items.map(({ url, kind, master, time, frameId }) => ({ url, kind, master, frameId, time: new Date(time).toISOString() })),
     },
   };
+}
+
+// Имя файла — заголовок вкладки; если видео на странице несколько, добавляем номер
+export function videoTitle(tab, videos, n) {
+  return videos.length > 1 ? `${tab.title} — видео ${n + 1}` : tab.title;
+}
+
+// Задачи для вкладки: если на странице несколько видео — по задаче на каждое (лучший поток каждого)
+export async function buildJobs(tab, mode) {
+  const videos = isKnownSite(tab.url) ? [] : groupVideos(await getCaught(tab.id));
+  if (videos.length < 2) return [await buildJob(tab, mode)];
+  const jobs = [];
+  for (const [n, v] of videos.entries()) {
+    jobs.push(await buildJob(tab, mode, v.best, {
+      title: videoTitle(tab, videos, n),
+      why: `видео ${n + 1} из ${videos.length} на странице — лучший поток этого видео`,
+    }));
+  }
+  return jobs;
 }
 
 // Ошибки расширения — в общий журнал качалки (если она запущена)
@@ -81,7 +173,7 @@ export function clientLog(message, level = "error") {
 }
 
 export async function send(job) {
-  const r = await api("/download", {
+  const r = await apiUp("/download", {
     method: "POST",
     body: JSON.stringify(job),
   });

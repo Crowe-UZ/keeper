@@ -1,4 +1,4 @@
-import { api, buildJob, send, getCaught, pickBest, isKnownSite, clientLog } from "./common.js";
+import { api, apiUp, startServer, isDown, buildJob, buildJobs, send, getCaught, groupVideos, videoTitle, isKnownSite, clientLog } from "./common.js";
 
 window.addEventListener("error", (e) => clientLog(`окно: ${e.message} @ ${e.filename}:${e.lineno}`));
 window.addEventListener("unhandledrejection", (e) => clientLog(`окно (promise): ${e.reason?.stack || e.reason}`));
@@ -6,18 +6,15 @@ window.addEventListener("unhandledrejection", (e) => clientLog(`окно (promis
 const $ = (id) => document.getElementById(id);
 const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 $("tabTitle").textContent = tab?.title || "";
+$("tabTitle").title = tab?.title || "";
 
 function esc(s) {
   return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 
 function showError(e) {
-  if (e instanceof TypeError) {
-    $("err").textContent = "Качалка не запущена — открой start.bat в папке download_web";
-  } else {
-    $("err").textContent = e.message;
-    clientLog(`окно: ${e.stack || e}`);
-  }
+  $("err").textContent = e.message;
+  if (!isDown(e)) clientLog(`окно: ${e.stack || e}`);
 }
 
 async function run(fn) {
@@ -25,89 +22,188 @@ async function run(fn) {
   try { await fn(); refresh(); } catch (e) { showError(e); }
 }
 
+// ----- состояние качалки: работает / запускается / не отвечает -----
+const STATES = { on: "работает", starting: "запускается…", off: "не запущена" };
+function setState(s) {
+  $("state").className = "state " + s;
+  $("stateText").textContent = STATES[s];
+  $("state").title = s === "off" ? "Нажми, чтобы запустить" : "";
+}
+
+// Качалка сама закрывается, когда ей нечего делать, — при открытии окна будим её
+let wake = null;
+function wakeServer() {
+  setState("starting");
+  wake ||= startServer()
+    .then(() => { $("err").textContent = ""; refresh(); })
+    .catch((e) => { setState("off"); showError(e); });
+}
+$("state").onclick = () => {
+  if (!$("state").classList.contains("off")) return;
+  wake = null;
+  wakeServer();
+};
+
 // ----- что поймали на этой вкладке -----
+// ссылки потоков обновляются постоянно, а разметку перерисовываем, только когда она изменилась —
+// поэтому кнопки берут видео и потоки отсюда, а не из момента отрисовки
+let videos = [];
+let items = [];
+
+// innerHTML трогаем, только если разметка изменилась: иначе раз в секунду сбрасывались бы наведение и нажатия
+function draw(el, html) {
+  if (el._html === html) return false;
+  el._html = html;
+  el.innerHTML = html;
+  return true;
+}
+
+const kindName = (it) => (it.master ? "HLS · все качества" : it.kind);
+const clock = (s) => [s >= 3600 ? Math.floor(s / 3600) : null, Math.floor(s / 60) % 60, s % 60]
+  .filter((x) => x !== null).map((x, i) => (i ? String(x).padStart(2, "0") : x)).join(":");
+
 async function renderCaught() {
   const caught = await getCaught(tab.id);
   const known = isKnownSite(tab.url);
-  const best = pickBest(caught.items);
+  videos = groupVideos(caught);
+  items = [...caught.items].sort((a, b) => b.time - a.time);
+  const many = !known && videos.length > 1;
   let hint = known
     ? "Сайт известен — качаю по ссылке в максимальном качестве."
-    : caught.items.length
-      ? "Поймал видеопоток на странице — качаю лучший."
-      : "Видео не поймано. Включи ролик (▶) на странице, подожди пару секунд и открой это окно снова.";
+    : many
+      ? `На странице ${videos.length} видео. Кнопки сверху качают все, кнопки в списке — одно. Наведи на строку — плеер подсветится на странице.`
+      : caught.items.length
+        ? "Поймал видеопоток на странице — качаю лучший."
+        : "Видео не поймано. Включи ролик (▶) на странице, подожди пару секунд и открой это окно снова.";
   if (caught.drm) hint += '<br><span class="warn">⚠ Похоже, видео защищено DRM — скорее всего, скачать не выйдет.</span>';
   $("hint").innerHTML = hint;
+  $("video").textContent = many ? `⬇ Все видео (${videos.length})` : "⬇ Видео";
+  $("audio").textContent = many ? `🎵 Звук всех` : "🎵 Звук";
 
-  if (!caught.items.length) return void ($("caught").innerHTML = "");
-  const items = [...caught.items].sort((a, b) => b.time - a.time);
-  $("caught").innerHTML = `<div class="section">Пойманные потоки (${items.length})</div>` + items.map((it, i) => `
+  const best = new Set(videos.map((v) => v.best));
+  const html = !items.length ? "" : `<div class="section">Видео на странице<span>${videos.length > 1 ? videos.length : ""}</span></div>` + videos.map((v, n) => `
+    <div class="item video ${v.playing ? "playing" : ""}" data-n="${n}">
+      <span class="name">Видео ${n + 1}</span>
+      <span class="u">${esc([v.duration ? clock(v.duration) : "", v.playing ? "играет" : "", kindName(v.best)].filter(Boolean).join(" · "))}</span>
+      <button class="small primary" data-mode="video">⬇ Видео</button>
+      <button class="small" data-mode="audio" title="Только звук (mp3)">🎵</button>
+    </div>`).join("") + `
+    <details><summary>Подробнее: все потоки (${items.length})</summary>` + items.map((it, i) => `
     <div class="item">
-      <span class="tag ${it === best ? "best" : ""}">${it.master ? "HLS · все качества" : esc(it.kind)}${it === best ? " ★" : ""}</span>
+      <span class="tag ${best.has(it) ? "best" : ""}">${esc(kindName(it))}${best.has(it) ? " ★" : ""}</span>
       <span class="u" title="${esc(it.url)}">${esc(new URL(it.url).hostname + new URL(it.url).pathname)}</span>
-      <button class="small alt" data-i="${i}">⬇</button>
-    </div>`).join("");
+      <button class="small" data-i="${i}">⬇</button>
+    </div>`).join("") + "</details>";
+  const open = $("caught").querySelector("details")?.open;
+  if (!draw($("caught"), html)) return;
+  if (open) $("caught").querySelector("details").open = true;
+
+  $("caught").querySelectorAll(".video").forEach((row) => {
+    const n = +row.dataset.n;
+    row.onmouseenter = () => highlight(videos[n], true);
+    row.onmouseleave = () => highlight(videos[n], false);
+    row.querySelectorAll("button").forEach((b) => {
+      b.onclick = () => run(async () => send(await buildJob(tab, b.dataset.mode, videos[n].best, {
+        title: videoTitle(tab, videos, n),
+        why: `видео ${n + 1} из ${videos.length} — выбрано в списке`,
+      })));
+    });
+  });
   $("caught").querySelectorAll("button[data-i]").forEach((b) => {
     b.onclick = () => run(async () => send(await buildJob(tab, "video", items[b.dataset.i])));
   });
 }
 
-// ----- очередь загрузок -----
-async function refresh() {
-  try {
-    const { jobs, ytdlp, summary: s, folder } = await (await api("/status")).json();
-    $("folderPath").textContent = folder;
-    $("folderPath").title = folder;
-    $("summary").textContent = jobs.length
-      ? `Качается: ${s.active} · В очереди: ${s.queued} · Готово: ${s.done}` + (s.failed ? ` · Ошибок: ${s.failed}` : "")
-      : "";
-    $("ver").textContent = `расширение ${chrome.runtime.getManifest().version} · yt-dlp ${ytdlp}`;
-    $("jobs").innerHTML = jobs.map((j) => {
-      const busy = j.status === "скачивается";
-      const eta = busy && j.eta ? "осталось " + (j.eta >= 60 ? Math.floor(j.eta / 60) + " мин" : Math.round(j.eta) + " с") : "";
-      const extra = [j.quality, busy ? j.percent + "%" : "", busy && j.done_mb ? j.done_mb + " МБ" : "", busy ? j.speed : "", eta]
-        .filter(Boolean).join(" · ");
-      return `
-      <div class="job">
-        <div class="title" title="${esc(j.title)}">${j.mode === "audio" ? "🎵" : "🎬"} ${esc(j.title)}</div>
-        <div class="bar"><div style="width:${j.percent}%"></div></div>
-        <div class="st ${j.error ? "bad" : ""}">${esc(j.status)}${extra ? " · " + esc(extra) : ""} ${esc(j.error || "")}
-          ${j.has_file && j.status.startsWith("готово") ? `<span class="loglink" data-open="${esc(j.id)}">▶ открыть</span> <span class="loglink" data-show="${esc(j.id)}">📂 показать в папке</span>` : ""}
-          ${j.has_log ? `<span class="loglink" data-log="${esc(j.id)}">лог</span>` : ""}</div>
-      </div>`;
-    }).join("");
-    for (const [attr, path] of [["open", "/open-file"], ["show", "/show-file"]]) {
-      $("jobs").querySelectorAll(`[data-${attr}]`).forEach((a) => {
-        a.onclick = () => run(async () => {
-          const r = await api(path + "?id=" + a.dataset[attr]);
-          if (!r.ok) throw new Error((await r.json()).error);
-        });
-      });
-    }
-    $("jobs").querySelectorAll("[data-log]").forEach((a) => {
-      a.onclick = () => api("/open-log?id=" + a.dataset.log).catch(showError);
-    });
-  } catch (e) {
-    showError(e);
-  }
+// Показать на странице, какой плеер соответствует строке списка
+function highlight(video, on) {
+  if (!video?.src) return;
+  chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    args: [video.src, on],
+    func: (src, on) => {
+      const frame = [...document.querySelectorAll("iframe")].find((e) => e.src === src);
+      if (!frame) return;
+      clearTimeout(frame._kachalka);
+      frame.style.outline = on ? "4px solid #6d5efc" : "";
+      if (!on) return;
+      frame.scrollIntoView({ block: "center", behavior: "smooth" });
+      frame._kachalka = setTimeout(() => { frame.style.outline = ""; }, 5000);  // окно могли закрыть, не убрав мышь
+    },
+  }).catch(() => {});
 }
 
+// ----- очередь загрузок -----
+const WAITING = ["подготовка", "склейка"];  // идёт работа, но процента нет — полоска «бегает»
+
+function jobHtml(j) {
+  const busy = j.status === "скачивается";
+  const done = j.status.startsWith("готово");
+  const eta = busy && j.eta ? "осталось " + (j.eta >= 60 ? Math.floor(j.eta / 60) + " мин" : Math.round(j.eta) + " с") : "";
+  const extra = [j.quality, busy && j.done_mb ? j.done_mb + " МБ" : "", busy ? j.speed : "", eta].filter(Boolean).join(" · ");
+  const cls = done ? "done" : j.error ? "failed" : WAITING.includes(j.status) ? "waiting" : "";
+  return `
+    <div class="job ${cls}">
+      <div class="top">
+        <div class="title u" title="${esc(j.title)}">${j.mode === "audio" ? "🎵" : "🎬"} ${esc(j.title)}</div>
+        <div class="pct">${busy ? j.percent + "%" : ""}</div>
+      </div>
+      <div class="bar"><div style="width:${j.percent}%"></div></div>
+      <div class="st">${esc(j.status)}${extra ? " · " + esc(extra) : ""}${j.error ? " — " + esc(j.error) : ""}</div>
+      <div class="acts">${
+        done && j.has_file ? `<button class="ghost small" data-act="/open-file" data-id="${esc(j.id)}">▶ Открыть</button><button class="ghost small" data-act="/show-file" data-id="${esc(j.id)}">📂 В папке</button>` : ""
+      }${j.has_log ? `<button class="ghost small" data-act="/open-log" data-id="${esc(j.id)}">Лог</button>` : ""}</div>
+    </div>`;
+}
+
+async function refresh() {
+  let data;
+  try {
+    data = await (await api("/status")).json();
+  } catch (e) {
+    if (!isDown(e)) return showError(e);
+    return wake ? undefined : wakeServer();  // будим один раз; не вышло — дальше только по нажатию на статус
+  }
+  const { jobs, ytdlp, summary: s, folder } = data;
+  setState("on");
+  wake = null;
+  $("folderPath").textContent = folder;
+  $("folderPath").title = folder;
+  $("ver").textContent = `v${chrome.runtime.getManifest().version} · yt-dlp ${ytdlp}`;
+  const counts = [s.active ? `качается ${s.active}` : "", s.queued ? `в очереди ${s.queued}` : "", s.done ? `готово ${s.done}` : "", s.failed ? `ошибок ${s.failed}` : ""]
+    .filter(Boolean).join(" · ");
+  draw($("queue"), !jobs.length ? "" : `<div class="section">Загрузки<span class="u">${counts}</span>${s.done || s.failed ? '<button class="ghost small" data-act="/clear" title="Убрать из списка готовые и ошибки (файлы остаются)">Очистить</button>' : ""}</div>`
+    + jobs.map(jobHtml).join(""));
+}
+
+// кнопки внутри очереди перерисовываются — ловим нажатия на самом списке
+$("queue").onclick = (e) => {
+  const b = e.target.closest("[data-act]");
+  if (!b) return;
+  run(async () => {
+    const r = await api(b.dataset.act + (b.dataset.id ? "?id=" + b.dataset.id : ""));
+    if (!r.ok) throw new Error((await r.json()).error);
+  });
+};
+
 const allTabs = (await chrome.tabs.query({})).filter((t) => /^https?:/.test(t.url));
-$("all").textContent = `Все вкладки (${allTabs.length})`;
+$("all").textContent = `Скачать со всех вкладок (${allTabs.length})`;
 
-$("video").onclick = () => run(async () => send(await buildJob(tab, "video")));
-$("audio").onclick = () => run(async () => send(await buildJob(tab, "audio")));
+const sendAll = async (t, mode) => { for (const job of await buildJobs(t, mode)) await send(job); };
+$("video").onclick = () => run(() => sendAll(tab, "video"));
+$("audio").onclick = () => run(() => sendAll(tab, "audio"));
 $("all").onclick = () => run(async () => {
-  for (const t of allTabs) await send(await buildJob(t, "video"));
+  for (const t of allTabs) await sendAll(t, "video");
 });
-$("logs").onclick = () => api("/open-logs").catch(showError);
+$("logs").onclick = () => run(() => apiUp("/open-logs"));
+$("folder").onclick = () => run(() => apiUp("/open-folder"));
 $("chooseFolder").onclick = () => run(async () => {
-  $("chooseFolder").textContent = "Выбери папку в окне Windows…";
-  try { await api("/choose-folder"); } finally { $("chooseFolder").textContent = "Сменить"; }
+  $("chooseFolder").textContent = "Выбери в окне Windows…";
+  try { await apiUp("/choose-folder"); } finally { $("chooseFolder").textContent = "Сменить"; }
 });
-$("folder").onclick = () => api("/open-folder").catch(showError);
-$("clear").onclick = () => run(() => api("/clear"));
 
-await chrome.runtime.sendMessage({ type: "scan", tabId: tab.id }).catch(() => {});
-renderCaught();
+const scan = () => chrome.runtime.sendMessage({ type: "scan", tabId: tab.id }).catch(() => {});
 refresh();
+await scan();
+renderCaught();
 setInterval(() => { refresh(); renderCaught(); }, 1000);
+setInterval(scan, 2000);  // длительность и «играет сейчас» меняются, пока окно открыто
