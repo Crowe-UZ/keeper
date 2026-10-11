@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+# Перед каждым пушем: тесты и объявленные проверки качества — только по тому, что внёс этот пуш.
+# Включается один раз: git config core.hooksPath .githooks
+bash tests/run.sh || { echo "pre-push: тесты упали — пуш остановлен"; exit 1; }
+exec npx --yes agent-quality-kit@0.19.0 doctor --run --since origin/main --brief

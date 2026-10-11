@@ -1,0 +1,50 @@
+# .aqk.yml — манифест Agent Quality Kit
+# Что это: машиночитаемое описание того, как в этом репозитории живут агенты.
+# Уровень соответствия считает `aqk doctor`. Пустое поле = ступень не пройдена,
+# и это честно: заполнять заглушками бессмысленно, проверяются файлы, а не слова.
+
+aqk: 1
+
+# AQK-0 — что агент читает первым.
+entry:
+  - AGENTS.md
+
+# AQK-1 — где стандарты и какие проверки обязательны. docs — где методички:
+# оба пути читает doctor, так что комплект можно разложить куда угодно.
+rules: .aqk/rules
+docs: .aqk/docs
+gates:
+  # Имя: команда, возвращающая 0 или не 0. Пустое объявление защиты не даёт и бракуется
+  # проверкой «объявленный гейт запускается» — поэтому здесь примеры, а не заготовки.
+  #   lint: "ruff check ."
+  #   test: "pytest -q"
+  # Поставить готовую запись из каталога вместе с образцами: aqk add <имя>
+  file-size-limit: "bash gates/file-size-limit/check.sh ."
+  complexity-limit: "bash gates/_native.sh . ruff check -q --isolated --no-cache --output-format=concise --select C901,PLR0912,PLR0915 ."
+  dead-code: "bash gates/_native.sh . vulture --min-confidence 60 --exclude aqk-no-config-exclude ."
+  duplicate-code: "bash gates/_native.sh . npx --yes jscpd@5.3 --min-lines 8 --threshold 1 --fail-on-empty --format "javascript,jsx,typescript,tsx,vue,python,go,ruby,java,php,rust,kotlin,swift,scala" ."
+  secrets-not-in-code: "bash gates/secrets-not-in-code/check.sh ."
+  swallowed-error: "bash gates/_native.sh . ruff check -q --isolated --no-cache --output-format=concise --select BLE,TRY400,SIM105 ."
+  no-print-in-prod: "bash gates/_native.sh . ruff check -q --isolated --no-cache --output-format=concise --select T20 ."
+  todo-without-task: "bash gates/_native.sh . ruff check -q --isolated --no-cache --output-format=concise --select FIX,TD ."
+  gate-not-weakened: "bash gates/gate-not-weakened/check.sh ."
+  commit-explains-itself: "bash gates/commit-explains-itself/check.sh ."
+  lesson-has-outcome: "bash gates/lesson-has-outcome/check.sh ."
+
+# AQK-2 — чем доказано, что гейты работают, и где реестры долга.
+# samples: каталог с красными и зелёными образцами (гейт обязан краснеть на первом
+# и молчать на втором). ratchets: списки известных нарушений, которые могут только
+# укорачиваться.
+samples: gates
+ratchets: ratchets
+# AQK-3 — где копятся уроки. Путь или адрес.
+lessons: ""
+
+# Совещательные гейты: показывают находки, но не роняют прогон. Третий способ ввести
+# правило — рядом с храповиком и с большой чисткой. Список называется в каждом прогоне:
+# совещательный гейт, о котором забыли, — это выключенная проверка.
+# duplicate-code — совещательный ВРЕМЕННО: jscpd считает дублями собственные образцы комплекта
+# (gates/file-size-limit/green ↔ red и др.), и фильтр образцов их не убирает — 28 % «дублей» при чистом коде
+# проекта. Сообщено автору комплекта; вернуть в обязательные, когда исправят.
+advisory:
+  - duplicate-code

@@ -1,0 +1,25 @@
+# Снимок объявленной защиты. Набор может только РАСТИ.
+# Убрал гейт — напиши причину после # в его строке, иначе проверка краснеет.
+# Строка «# run имя: команда» — не комментарий: смена команды без её правки краснеет.
+file-size-limit
+# run file-size-limit: bash gates/file-size-limit/check.sh .
+complexity-limit
+# run complexity-limit: bash gates/_native.sh . ruff check -q --isolated --no-cache --output-format=concise --select C901,PLR0912,PLR0915 .
+dead-code
+# run dead-code: bash gates/_native.sh . npx --yes knip@6 --directory .
+duplicate-code
+# run duplicate-code: bash gates/_native.sh . npx --yes jscpd@5.3 --min-lines 8 --threshold 1 --fail-on-empty --format "javascript,jsx,typescript,tsx,vue,python,go,ruby,java,php,rust,kotlin,swift,scala" .
+secrets-not-in-code
+# run secrets-not-in-code: bash gates/secrets-not-in-code/check.sh .
+swallowed-error
+# run swallowed-error: bash gates/_native.sh . ruff check -q --isolated --no-cache --output-format=concise --select BLE,TRY400,SIM105 .
+no-print-in-prod
+# run no-print-in-prod: bash gates/_native.sh . ruff check -q --isolated --no-cache --output-format=concise --select T20 .
+todo-without-task
+# run todo-without-task: bash gates/_native.sh . ruff check -q --isolated --no-cache --output-format=concise --select FIX,TD .
+gate-not-weakened
+# run gate-not-weakened: bash gates/gate-not-weakened/check.sh .
+commit-explains-itself
+# run commit-explains-itself: bash gates/commit-explains-itself/check.sh .
+lesson-has-outcome
+# run lesson-has-outcome: bash gates/lesson-has-outcome/check.sh .

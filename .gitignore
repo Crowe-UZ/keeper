@@ -4,3 +4,17 @@ __pycache__/
 settings.json
 native_host.json
 history.json
+
+# aqk: состояние этой машины — переписывается каждым прогоном, в git ему не место
+.aqk/last-run.md
+.aqk/last-probe.md
+.aqk/advice-shown
+.aqk/update-checked
+.aqk/feedback-asked
+node_modules/
+tests/e2e/popup.png
+# общие методички и подборка скиллов AQK — не про этот проект; разложить заново: npx agent-quality-kit init
+.aqk/docs/
+.aqk/skills/
+.aqk/report.html
+.aqk/history.jsonl

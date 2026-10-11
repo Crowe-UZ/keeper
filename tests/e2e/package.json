@@ -1,0 +1,12 @@
+{
+  "name": "kachalka-e2e",
+  "private": true,
+  "description": "Сквозной тест расширения: настоящий Chrome с расширением, тестовая страница с двумя плеерами, работающая качалка",
+  "type": "module",
+  "scripts": {
+    "test": "node run.mjs"
+  },
+  "devDependencies": {
+    "puppeteer": "25.13.0"
+  }
+}

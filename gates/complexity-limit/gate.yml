@@ -1,0 +1,26 @@
+intent: функция не вырастает до сложности, в которой её нельзя удержать в голове
+intent_en: a function does not grow past the complexity you can hold in your head
+
+trigger:
+  always: true
+
+# Домашние страницы готовых инструментов, которые зовут рецепты ниже. Адреса сверены
+# по реестру github 2026-09-10, а не написаны по памяти: три выдуманных адреса чужих
+# репозиториев — записанная шишка комплекта.
+tool: https://github.com/astral-sh/ruff · https://github.com/eslint/eslint
+
+# Флаги против исключения пути из конфигурации инструмента (`--isolated`, `--ignore=`,
+# непустой `--exclude`) обязательны: без них одна строка в конфиге проекта снимает находку,
+# а нарушение остаётся в коде. Замер и цена — в шапке `kit/gates/_native.sh`.
+recipes:
+  # Переносимая мера грубая — глубина вложенности. Готовые правила считают ветвления и
+  # инструкции, это точнее; см. kit/docs/ready-made-rules.md
+  any: bash {gate}/check.sh {dir}
+  python: ruff check -q --isolated --no-cache --output-format=concise --select C901,PLR0912,PLR0915 {dir}
+  typescript: eslint --no-config-lookup --ignore-pattern 'gates/*/red/**' --ignore-pattern 'gates/*/green/**' --rule '{"complexity":["error",10],"max-depth":["error",4]}' {dir}
+
+proof: incidents/README.md — «2026-08-27 ревизия гейтов», п. 6: 75 функций сложнее нормы, худшая с 29 ветвлениями
+
+# Правило Biome под эту запись — для сверки `covers:` (рецептов под Biome нет). Имя сверено по
+# схеме конфигурации Biome 2.5.12, а не по памяти.
+biome_rules: complexity/noExcessiveCognitiveComplexity

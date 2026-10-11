@@ -1,0 +1,12 @@
+# Настройки инструментов проверки. Сам проект не собирается в пакет — это набор скриптов.
+
+[tool.vulture]
+# Имена, которые вызываются не из нашего кода, а по имени — поиск мёртвого кода их вызовов не видит:
+#   do_*            — http.server сам зовёт do_GET / do_POST / do_OPTIONS;
+#   _status … _retry — методы из таблицы адресов ROUTES в kachalka/api.py (вызов через getattr);
+#   остальные       — классы тестов, их находит и запускает unittest.
+ignore_names = [
+    "do_*",
+    "_status", "_open_folder", "_open_logs", "_open_file", "_open_log", "_clear", "_cancel", "_retry", "_choose_folder",
+    "PickFormat", "JobKind", "PlanAttempts", "Texts", "Names", "Probe", "SameVideo", "Routes",
+]

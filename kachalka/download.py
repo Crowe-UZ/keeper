@@ -262,16 +262,15 @@ def reporter():
 
 
 def report_once():
-    if True:
-        with lock:
-            active = [(k, dict(v)) for k, v in jobs.items() if v["status"] in ACTIVE]
-        if not active:
-            return
-        s = summary()
-        log.info(f"--- сейчас: качается {s['active']}, в очереди {s['queued']}, готово {s['done']}, ошибок {s['failed']}")
-        for k, v in active:
-            log.info(f"    [{k}] {v['status']} {v['percent']}% · {v['done_mb']} МБ · {v['speed'] or '?'} · "
-                     f"осталось ~{fmt_eta(v.get('eta'))} · {v['title'][:60]}")
+    with lock:
+        active = [(k, dict(v)) for k, v in jobs.items() if v["status"] in ACTIVE]
+    if not active:
+        return
+    s = summary()
+    log.info(f"--- сейчас: качается {s['active']}, в очереди {s['queued']}, готово {s['done']}, ошибок {s['failed']}")
+    for k, v in active:
+        log.info(f"    [{k}] {v['status']} {v['percent']}% · {v['done_mb']} МБ · {v['speed'] or '?'} · "
+                 f"осталось ~{fmt_eta(v.get('eta'))} · {v['title'][:60]}")
 
 
 def worker():

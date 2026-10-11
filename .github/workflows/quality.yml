@@ -1,0 +1,31 @@
+name: quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # проверке сообщения коммита и пробе нужна история
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Инструменты проверок и зависимости качалки
+        run: pip install "yt-dlp[default]" ruff vulture
+      - name: Модульные тесты
+        run: bash tests/run.sh
+      - name: Объявленные проверки качества (AQK)
+        run: npx --yes agent-quality-kit@0.19.0 doctor --run --min 1
+        env:
+          AQK_PROBE: "0"

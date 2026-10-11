@@ -1,0 +1,166 @@
+// Сквозная проверка: настоящее расширение в браузере + настоящая качалка. Каждая кнопка окна.
+import puppeteer from "puppeteer";
+
+// Запуск: качалка должна работать (start.bat), затем в этой папке: npm install && npm test
+// NO_WINDOWS=1 — не нажимать кнопки, которые открывают окна Windows.
+import { createServer } from "node:http";
+import { readFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const EXT = resolve(HERE, "..", "..", "extension");
+
+// Тестовый «урок»: страница с двумя плеерами в iframe. Отдаём её сами, чтобы тесту ничего не требовалось снаружи.
+const site = createServer(async (req, res) => {
+  const name = new URL(req.url, "http://x").pathname.slice(1);
+  if (!["page.html", "player.html"].includes(name)) return res.writeHead(404).end();
+  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(await readFile(join(HERE, "site", name)));
+}).listen(5612, "127.0.0.1");
+const ID = "haolabffcigdogdogoglgmgjkjibjnfc";
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let failed = 0;
+const check = (name, ok, extra = "") => { if (!ok) failed++; console.log(`${ok ? "PASS" : "FAIL"}  ${name}${extra ? "  -> " + extra : ""}`); };
+
+const browser = await puppeteer.launch({
+  headless: true,
+  pipe: true, enableExtensions: [EXT],
+  args: ["--autoplay-policy=no-user-gesture-required", "--mute-audio"],
+});
+try {
+  const lesson = await browser.newPage();
+  await lesson.goto("http://127.0.0.1:5612/page.html");
+  const swTarget = await browser.waitForTarget((t) => t.type() === "service_worker" && t.url().includes(ID), { timeout: 15000 });
+  const sw = await swTarget.worker();
+  await sleep(8000);  // плееры грузят плейлисты и начинают играть
+  const tabId = await sw.evaluate(async () => (await chrome.tabs.query({ url: "http://127.0.0.1:5612/*" }))[0].id);
+
+  const popup = await browser.newPage();
+  await popup.setViewport({ width: 420, height: 900 });
+  const errors = [];
+  popup.on("pageerror", (e) => errors.push(String(e)));
+  await popup.goto(`chrome-extension://${ID}/popup.html?tab=${tabId}`);
+  await sleep(4000);
+
+  const text = (sel) => popup.$eval(sel, (e) => e.innerText.trim()).catch(() => null);
+  const jobs = () => popup.$$eval(".job", (els) => els.map((j) => ({
+    title: j.querySelector(".title").innerText.trim(), st: j.querySelector(".st").innerText.trim(),
+    acts: [...j.querySelectorAll(".acts button")].map((b) => b.innerText.trim()),
+  })));
+  const waitJob = async (pred, limit = 180000) => {
+    for (const t = Date.now(); Date.now() - t < limit; await sleep(400)) {
+      const j = (await jobs()).find(pred);
+      if (j) return j;
+    }
+    return null;
+  };
+  const clickAct = (titlePart, label) => popup.evaluate((titlePart, label) => {
+    const job = [...document.querySelectorAll(".job")].find((j) => j.querySelector(".title").innerText.includes(titlePart));
+    const b = job && [...job.querySelectorAll(".acts button")].find((x) => x.innerText.includes(label));
+    if (b) b.click();
+    return !!b;
+  }, titlePart, label);
+  const cardBtn = (n, mode) => popup.click(`.video[data-n="${n}"] button[data-mode="${mode}"]`);
+
+  // ---- окно: состояние, список видео ----
+  check("качалка отвечает", (await text("#stateText")) === "работает", await text("#stateText"));
+  const cards = await popup.$$eval(".video", (els) => els.map((e) => ({
+    name: e.querySelector(".name").innerText.trim(), meta: e.querySelectorAll(".info .u")[1].innerText.trim(),
+    thumb: e.querySelector(".thumb").classList.contains("has"),
+  })));
+  console.log("      карточки:", JSON.stringify(cards));
+  check("найдено 2 видео", cards.length === 2);
+  check("видео 1: заголовок со страницы, без кода стилей", cards[0]?.name === "1. Часть первая", cards[0]?.name);
+  check("видео 2: заголовка нет -> «Видео 2»", cards[1]?.name === "Видео 2", cards[1]?.name);
+  check("превью-кадры есть", cards.every((c) => c.thumb));
+  check("длительность и «играет»", cards.every((c) => /\d:\d\d/.test(c.meta) && c.meta.includes("играет")), cards.map((c) => c.meta).join(" | "));
+  check("для каждого видео выбран мастер-плейлист", cards.every((c) => c.meta.includes("все качества")));
+  check("верхняя кнопка: все видео", (await text("#video")) === "⬇ Все видео (2)", await text("#video"));
+  check("папка показана", !!(await text("#folderPath")), await text("#folderPath"));
+
+  // ---- «Подробнее» не схлопывается при обновлении списка ----
+  await popup.click("#caught summary");
+  await sleep(3000);
+  check("«Подробнее» остаётся открытым", await popup.$eval("#caught details", (d) => d.open));
+  check("в «Подробнее» есть потоки", (await popup.$$("#caught details .item")).length >= 2);
+
+  // ---- подсветка плеера на странице ----
+  await popup.hover('.video[data-n="1"]');
+  await sleep(700);
+  check("наведение подсвечивает второй плеер", (await lesson.$eval("#p2", (f) => f.style.outline)).includes("solid"));
+  check("первый плеер не подсвечен", !(await lesson.$eval("#p1", (f) => f.style.outline)));
+  await popup.hover("h1");
+  await sleep(700);
+  check("подсветка снимается", !(await lesson.$eval("#p2", (f) => f.style.outline)));
+
+  // ---- качество ----
+  await popup.select("#quality", "480");
+  await sleep(300);
+  check("качество запоминается", (await sw.evaluate(async () => (await chrome.storage.local.get("quality")).quality)) === 480);
+
+  // ---- видео 2: скачать -> отмена -> повторить -> готово ----
+  await cardBtn(1, "video");
+  let j = await waitJob((x) => x.title.includes("видео 2") && x.st.startsWith("скачивается"), 60000);
+  check("видео 2 качается, файл назван «… — видео 2»", !!j, j?.title);
+  check("у загрузки есть «Отмена»", !!j?.acts.some((a) => a.includes("Отмена")));
+  await clickAct("видео 2", "Отмена");
+  j = await waitJob((x) => x.title.includes("видео 2") && x.st.startsWith("отменено"), 30000);
+  check("«Отмена» отменяет", !!j, (await text("#err")) || "");
+  check("у отменённой есть «Повторить»", !!j?.acts.some((a) => a.includes("Повторить")));
+  await clickAct("видео 2", "Повторить");
+  j = await waitJob((x) => x.title.includes("видео 2") && (x.st.startsWith("готово") || x.st.startsWith("ошибка")));
+  check("«Повторить» докачивает до конца", !!j?.st.startsWith("готово"), j?.st);
+  check("у готовой есть «Открыть», «В папке», «Лог»", ["Открыть", "В папке", "Лог"].every((l) => j?.acts.some((a) => a.includes(l))), j?.acts.join(","));
+
+  // ---- повторная загрузка того же видео ----
+  await cardBtn(1, "video");
+  await sleep(2500);
+  const notice = await text("#notice span");
+  check("уже скачанное не качается второй раз", !!notice?.startsWith("Уже скачано"), notice);
+  check("новой задачи не появилось", (await jobs()).length === 1);
+  await popup.click("#notice button");
+  await sleep(2500);
+  check("«Скачать ещё раз» запускает загрузку", (await jobs()).length === 2);
+  await popup.evaluate(() => document.querySelector('.job [data-act="/cancel"]')?.click());
+  await waitJob((x) => x.st.startsWith("отменено"), 30000);
+
+  // ---- звук ----
+  await cardBtn(1, "audio");
+  j = await waitJob((x) => x.title.startsWith("🎵") && (x.st.startsWith("готово") || x.st.startsWith("ошибка")));
+  check("«🎵» качает звук (mp3)", !!j?.st.startsWith("готово"), j?.st);
+
+  // ---- верхняя кнопка: все видео, уже скачанное пропускается ----
+  await popup.click("#video");
+  j = await waitJob((x) => x.title.includes("1. Часть первая") && x.st.startsWith("скачивается"), 60000);
+  check("«Все видео» ставит в очередь видео 1 с названием в имени файла", !!j, j?.title);
+  check("…а скачанное видео 2 пропускает с предупреждением", !!(await text("#notice span"))?.startsWith("Уже скачано"), await text("#notice span"));
+  check("счётчик в шапке загрузок", (await text("#queue .section span"))?.includes("качается 1"), await text("#queue .section span"));
+  await clickAct("1. Часть первая", "Отмена");
+  await waitJob((x) => x.title.includes("1. Часть первая") && x.st.startsWith("отменено"), 30000);
+
+  // ---- кнопки, которые открывают окна Windows (сам запрос должен пройти без ошибки) ----
+  // эти кнопки открывают окна Windows поверх остальных — при NO_WINDOWS=1 их не трогаем
+  for (const [name, fn] of process.env.NO_WINDOWS ? [] : [
+    ["«Лог» у загрузки", () => clickAct("видео 2", "Лог")],
+    ["«В папке» у готовой", () => clickAct("видео 2", "В папке")],
+    ["«Открыть» папку с видео", () => popup.click("#folder")],
+    ["«Логи»", () => popup.click("#logs")],
+  ]) {
+    await fn();
+    await sleep(1500);
+    check(name, !(await text("#err")), (await text("#err")) || "");
+  }
+
+  // ---- «Очистить» ----
+  await popup.click('#queue [data-act="/clear"]');
+  await sleep(2000);
+  check("«Очистить» убирает завершённые", (await jobs()).length === 0, JSON.stringify(await jobs()));
+
+  check("ошибок скриптов в окне нет", errors.length === 0, errors.join(" | "));
+  await popup.screenshot({ path: "popup.png", fullPage: true });
+} finally {
+  await browser.close();
+  site.close();
+}
+console.log(failed ? `\nПРОВАЛЕНО: ${failed}` : "\nВСЁ ПРОШЛО");
+process.exit(failed ? 1 : 0);

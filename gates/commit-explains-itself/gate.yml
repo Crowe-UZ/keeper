@@ -1,0 +1,11 @@
+intent: коммит несёт мини-отчёт — что сделано и в чём агент не уверен
+intent_en: the commit carries a mini-report — what was done and what the agent is unsure about
+
+trigger:
+  always: true
+
+recipes:
+  any: bash {gate}/check.sh {dir}
+
+proof: incidents/README.md — «2026-09-04 — дифф проверяет реализацию, но не замысел»: 416 из 1069
+  коммитов чужого проекта за 90 дней оказались fix — стабилизацией уже выкаченного, не фичей
