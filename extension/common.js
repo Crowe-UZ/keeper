@@ -145,6 +145,7 @@ export async function buildJob(tab, item, { title, why } = {}) {
     page_url: tab.url,
     want: await getWant(),
     language: await getLanguage(),
+    formats: await getFormats(),
     max_height: await getQuality(),
     sniffed: !!chosen,
     headers: chosen ? chosen.headers : {},
@@ -198,6 +199,11 @@ export async function getWant() {
 // Язык речи для распознавания: auto — определить самой, ru — русский, multi — английский и другие европейские
 export async function getLanguage() {
   return (await chrome.storage.local.get("language")).language || "auto";
+}
+
+// В каком виде сохранять: видео mp4 | best, звук m4a | mp3, текст txt | timed | srt. Чего нет — программа возьмёт по умолчанию
+export async function getFormats() {
+  return (await chrome.storage.local.get("formats")).formats || {};
 }
 
 // Ограничение качества из окна расширения: высота кадра (1080, 720…), 0 — максимум

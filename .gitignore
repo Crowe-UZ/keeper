@@ -20,3 +20,4 @@ tests/e2e/popup.png
 .aqk/history.jsonl
 models/
 .aqk/report.md
+tests/e2e/site/gen/

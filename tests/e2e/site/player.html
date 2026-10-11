@@ -1,8 +1,10 @@
 <!doctype html><meta charset="utf-8"><body style="margin:0">
-<video id="v" muted autoplay playsinline style="width:100%"></video>
+<video id="v" muted autoplay loop playsinline style="width:100%"></video>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
 <script>
-const src = new URLSearchParams(location.search).get("v") === "1"
-  ? "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8" : "https://test-streams.mux.dev/test_001/stream.m3u8";
-const h = new Hls(); h.loadSource(src); h.attachMedia(v); h.on(Hls.Events.MANIFEST_PARSED, () => v.play());
+// тестовое видео создаёт сам тест (см. run.mjs) и кладёт в gen/1 и gen/2
+const src = "/gen/" + (new URLSearchParams(location.search).get("v") === "1" ? "1" : "2") + "/master.m3u8";
+// играем младшее качество и не переключаемся: куски старшего тестовый сервер отдаёт нарочно медленно
+const h = new Hls({ startLevel: 0 }); h.loadSource(src); h.attachMedia(v);
+h.on(Hls.Events.MANIFEST_PARSED, () => { h.currentLevel = 0; v.play(); });
 </script>

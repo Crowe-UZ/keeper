@@ -16,7 +16,7 @@ from .getcourse import GETCOURSE_LESSON_RE, SIGN_PLAYER_RE, getcourse_info, getc
 from .history import remember
 from .joblog import YtdlpLog, close_job_logger, job_logger, redact_cookies
 from .notify import toast
-from .outputs import make_outputs, want_label
+from .outputs import clean_formats, make_outputs, want_label
 from .system import FFMPEG_DIR, JS_RUNTIMES, environment
 from .textahead import TEXT_FORMAT, TextAhead
 
@@ -72,20 +72,25 @@ SORT = ["fps", "hdr:12", "vcodec:h264", "acodec:m4a"]
 AUDIO_FORMAT = "ba[acodec^=mp4a]/ba/b[height<=480]/b[height<=720]/w"
 
 
-def pick_format(mode, max_height, has_ffmpeg, private=False):
+def pick_format(mode, max_height, has_ffmpeg, private=False, formats=None):
     """Какой формат просить у yt-dlp. max_height — ограничение качества из окна расширения (0 — максимум):
     это предпочтение, а не фильтр — нет такого разрешения, возьмётся ближайшее; считается по меньшей стороне,
     так что вертикальное видео не путает. private — пойманный поток или урок курса: в файл ничего не дописываем."""
     res = f"res:{max_height}" if max_height else "res"
+    chosen = clean_formats(formats)
     if mode == "text":
         return {"format": TEXT_FORMAT}  # самый лёгкий звук как есть: он временный, перекодировать незачем
     if mode == "audio":
-        m4a = {"postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "m4a"}]}  # AAC ложится без пережатия
-        return {"format": AUDIO_FORMAT, **(m4a if has_ffmpeg else {})}
+        codec = {"key": "FFmpegExtractAudio", "preferredcodec": "m4a"}  # AAC ложится без пережатия
+        if chosen["audio"] == "mp3":
+            codec = {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "2"}
+        return {"format": AUDIO_FORMAT, **({"postprocessors": [codec]} if has_ffmpeg else {})}
     if not has_ffmpeg:
         return {"format": "b", "format_sort": [res]}  # без ffmpeg склеивать нечем — берём готовый файл со звуком
     # лучшее видео + лучший звук, склеить без пережатия
     fmt = {"format": "bv*+ba/b", "format_sort": [res, *SORT], "merge_output_format": "mp4"}
+    if chosen["video"] == "best":  # максимальное качество: любой кодек, а контейнер, в который ложится всё
+        fmt = {"format": "bv*+ba/b", "format_sort": [res, "fps"], "merge_output_format": "mkv"}
     if not private:
         # название и описание — в файл. У пойманного потока «описание» — служебная ссылка плеера с номером
         # пользователя и его адресом, такое в файл не пишем
@@ -131,7 +136,7 @@ def build_opts(job_id, job, cookie_file, lg):
         "retry_sleep_functions": {"fragment": pause, "http": pause},
         "socket_timeout": 10,
         "http_headers": job["headers"],
-        **pick_format(job["mode"], job["max_height"], bool(FFMPEG_DIR), private),
+        **pick_format(job["mode"], job["max_height"], bool(FFMPEG_DIR), private, job.get("formats")),
     }
     optional = {"js_runtimes": JS_RUNTIMES, "cookiefile": cookie_file, "ffmpeg_location": FFMPEG_DIR}
     opts.update({k: v for k, v in optional.items() if v})
@@ -227,7 +232,7 @@ def download_infos(ydl, job_id, job, infos, named, names, lg):
 
 
 def finish_result(job_id, job, result, stem, lg, ahead=None):
-    """Довести одно скачанное видео до того, что просили. Возвращает (главный файл или None, описание для окна)."""
+    """Довести одно скачанное видео до того, что просили. Возвращает (файлы {вид: путь}, описание для окна)."""
     path = ((result.get("requested_downloads") or [{}])[0].get("filepath")) or result.get("filepath")
     if not path or not os.path.exists(path):
         raise RuntimeError("Файл скачался, но пропал — возможно, его удалил антивирус. Нажми «Повторить».")
@@ -238,23 +243,29 @@ def finish_result(job_id, job, result, stem, lg, ahead=None):
         if p:
             lg.info(f"ffprobe итога: {json.dumps(p, ensure_ascii=False)}")
         about.append(describe_probe(p))
-    main = next((files[k] for k in ("video", "audio", "text") if k in files), None)
     for kind, file in files.items():
-        size = os.path.getsize(file) / 1024 / 1024
-        lg.info(f"готов файл ({kind}): {file} ({size:.1f} МБ)")
-    return main, " · ".join(x for x in [*about, note] if x)
+        lg.info(f"готов файл ({kind}): {file} ({os.path.getsize(file) / 1024 / 1024:.1f} МБ)")
+    return files, " · ".join(x for x in [*about, note] if x)
 
 
 def finish_ok(job_id, job, results, ahead, started, lg):
     done = [finish_result(job_id, job, result, stem, lg, ahead) for result, stem in results]
-    first = str(done[0][0]) if done and done[0][0] else None
+    files, about = done[0] if done else ({}, "")
+    first = next((str(files[k]) for k in ("video", "audio", "text") if k in files), None)
+    got = [w for w in job["want"] if any(w in f for f, _ in done)]
     parts = f" ({len(done)} видео)" if len(done) > 1 else ""
-    update(job_id, status="готово" + parts, percent=100, speed="", eta=None, file=first, quality=done[0][1] if done else "")
-    for path, quality in done:
-        log.info(f"[{job_id}] ГОТОВО за {time.time() - started:.0f} с ({want_label(job['want'])}): {path} {quality}")
+    update(job_id, status="готово" + parts, percent=100, speed="", eta=None, file=first, quality=about)
+    log.info(f"[{job_id}] ГОТОВО за {time.time() - started:.0f} с (просили: {want_label(job['want'])}; "
+             f"вышло: {want_label(got) or 'ничего'}): {first} {about}")
     if first:
         remember(job, first)
-        toast("Готово: " + want_label(job["want"]), job["title"], first)
+    # заголовок уведомления говорит правду: если вышло не всё, что просили, — так и написано
+    if got == job["want"]:
+        toast("Готово: " + want_label(got), job["title"], first)
+    elif got:
+        toast("Готово не всё: есть " + want_label(got), f"{job['title']} — {about}", first)
+    else:
+        toast("Речи в видео не нашлось", job["title"])
 
 
 def finish_failed(job_id, job, error, lg):

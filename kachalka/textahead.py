@@ -32,7 +32,7 @@ class TextAhead:
     def __init__(self, job_id, job, cookie_file, extract, lg):
         self.job_id, self.job, self.cookie_file, self.extract, self.lg = job_id, job, cookie_file, extract, lg
         self.stem = f"{job_id}-text{next(_serial)}"  # имя временного звука в .tmp; своё у каждой попытки
-        self.text = self.model = self.error = None
+        self.pieces = self.model = self.error = None
         self.stage = ("распознавание", 0)
         self.shown = False  # показывать этапы в окне начинаем, когда видео уже скачано: до того там идёт его прогресс
         self.dropped = threading.Event()
@@ -84,7 +84,7 @@ class TextAhead:
         try:
             self.lg.info(f"текст параллельно с видео: качаю лёгкий звук ({TEXT_FORMAT})")
             media = self.download()
-            self.text, self.model = transcribe(media, self.job["language"], self.on_stage, self.should_stop)
+            self.pieces, self.model = transcribe(media, self.job["language"], self.on_stage, self.should_stop)
             self.lg.info(f"текст параллельно с видео: распознано, модель {self.model}")
         except BaseException as e:  # noqa: BLE001 — поток не должен умирать молча: ошибку забирает wait() и решает, что с ней делать
             self.error = e
@@ -94,11 +94,11 @@ class TextAhead:
                     part.unlink()
 
     def wait(self):
-        """Дождаться результата: (текст, модель). С этого момента этапы распознавания видны в окне.
+        """Дождаться результата: (распознанные куски, модель). С этого момента этапы распознавания видны в окне.
         Бросает Cancelled при отмене и исходную ошибку, если параллельный проход не удался."""
         self.shown = True
         self.on_stage(*self.stage)
         self.thread.join()
         if self.error:
             raise Cancelled("распознавание прервано") if self.should_stop() else self.error
-        return self.text, self.model
+        return self.pieces, self.model

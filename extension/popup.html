@@ -25,6 +25,20 @@
   .state.on i { background: var(--ok); }
   .state.starting i { background: var(--warn); animation: blink 1s infinite; }
   .state.off { cursor: pointer; }
+  .state.on { display: none; }  /* всё в порядке — говорить не о чем; показываем, только когда программа не готова */
+  button.state { border: 0; font-weight: 400; }
+  .gear { font-size: 16px; padding: 4px 8px; }
+  .gear[aria-expanded="true"] { background: var(--card); color: var(--text); }
+  .set { display: flex; align-items: center; gap: 6px; padding: 5px 4px 5px 10px; margin-bottom: 6px; background: var(--card); border-radius: 8px; font-size: 12px; }
+  .set .label { flex: 0 0 74px; color: var(--text); white-space: nowrap; }
+  .set select { flex: 1; min-width: 0; margin: 0; }
+  .set .path { flex: 1; color: var(--muted); direction: rtl; text-align: left; }
+  button:disabled { opacity: .45; cursor: default; filter: none; }
+  button:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  footer details { margin: 0 0 0 auto; }
+  footer details[open] { flex: 1 0 100%; margin-top: 6px; }
+  footer details[open] summary { margin-bottom: 4px; }
+  footer .ver { margin: 6px 2px 0; }
   .state.off i { background: var(--bad); }
   @keyframes blink { 50% { opacity: .3; } }
 
@@ -89,7 +103,7 @@
   .acts { display: flex; gap: 2px; margin: 4px 0 -3px -8px; }
   .acts:empty { display: none; }
 
-  footer { display: flex; align-items: center; gap: 2px; margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line); }
+  footer { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line); }
   .ver { margin-left: auto; color: #5d5d6b; font-size: 11px; }
 </style>
 </head>
@@ -100,49 +114,79 @@
       <h1>Keeper</h1>
       <div class="tab u" id="tabTitle"></div>
     </div>
-    <div class="state" id="state"><i></i><span id="stateText">…</span></div>
+    <button class="state" id="state" type="button"><i></i><span id="stateText">…</span></button>
+    <button class="ghost gear" id="gear" type="button" title="Настройки: форматы, качество, язык речи, папка" aria-expanded="false">⚙</button>
   </header>
+
   <div class="want" id="want" title="Что получить: отметь одно или несколько — на каждое будет один файл">
-    <button class="chip" data-want="video">🎬 Видео</button>
-    <button class="chip" data-want="audio">🎵 Звук</button>
-    <button class="chip" data-want="text">📝 Текст</button>
+    <button class="chip" data-want="video" type="button">🎬 Видео</button>
+    <button class="chip" data-want="audio" type="button">🎵 Звук</button>
+    <button class="chip" data-want="text" type="button">📝 Текст</button>
   </div>
   <div class="main">
-    <button id="go" class="primary">⬇ Скачать</button>
+    <button id="go" class="primary" type="button">⬇ Скачать</button>
   </div>
-  <div class="folder">
-    <span>📁</span><span id="folderPath" class="u"></span>
-    <button id="folder" class="ghost small">Открыть</button>
-    <button id="chooseFolder" class="ghost small">Сменить</button>
-  </div>
-  <div class="folder">
-    <span>⚙️</span><span class="u">Качество видео</span>
-    <select id="quality">
-      <option value="0">Максимальное</option>
-      <option value="2160">до 4K (2160p)</option>
-      <option value="1440">до 1440p</option>
-      <option value="1080">до 1080p</option>
-      <option value="720">до 720p</option>
-      <option value="480">до 480p</option>
-    </select>
-  </div>
-  <div class="folder" id="languageRow" hidden>
-    <span>🗣</span><span class="u">Язык речи</span>
-    <select id="language" title="На каком языке говорят в видео">
-      <option value="auto">Определить автоматически</option>
-      <option value="ru">Русский</option>
-      <option value="multi">Английский и другие европейские</option>
-    </select>
-  </div>
+
+  <!-- всё, что программа хочет сказать в ответ на нажатие, — сразу под кнопкой -->
+  <div id="err" role="alert"></div>
+  <div id="notice" role="alert"></div>
   <div id="hint" class="note"></div>
-  <div id="err"></div>
-  <div id="notice"></div>
-  <div id="caught"></div>
+
+  <section id="settings" hidden>
+    <div class="section">Настройки</div>
+    <div class="set">
+      <span class="label">🎬 Видео</span>
+      <select id="fVideo" title="В каком виде сохранять видео">
+        <option value="mp4">MP4 — играет везде</option>
+        <option value="best">Максимальное качество (MKV)</option>
+      </select>
+      <select id="quality" title="Не качать видео крупнее, чем нужно">
+        <option value="0">любой размер</option>
+        <option value="2160">до 4K</option>
+        <option value="1440">до 1440p</option>
+        <option value="1080">до 1080p</option>
+        <option value="720">до 720p</option>
+        <option value="480">до 480p</option>
+      </select>
+    </div>
+    <div class="set">
+      <span class="label">🎵 Звук</span>
+      <select id="fAudio" title="В каком виде сохранять звук">
+        <option value="m4a">M4A — без потери качества</option>
+        <option value="mp3">MP3 — привычный</option>
+      </select>
+    </div>
+    <div class="set">
+      <span class="label">📝 Текст</span>
+      <select id="fText" title="В каком виде сохранять текст">
+        <option value="txt">Обычный текст (.txt)</option>
+        <option value="timed">Текст с отметками времени</option>
+        <option value="srt">Субтитры (.srt)</option>
+      </select>
+      <select id="language" title="На каком языке говорят в видео">
+        <option value="auto">язык: сам</option>
+        <option value="ru">русский</option>
+        <option value="multi">англ. и европейские</option>
+      </select>
+    </div>
+    <div class="set">
+      <span class="label">📁 Папка</span>
+      <span id="folderPath" class="u path"></span>
+      <button id="chooseFolder" class="ghost small" type="button">Сменить</button>
+    </div>
+  </section>
+
   <div id="queue"></div>
+  <div id="caught"></div>
+
   <footer>
-    <button id="all" class="ghost small">Все вкладки</button>
-    <button id="logs" class="ghost small">Логи</button>
-    <span class="ver" id="ver"></span>
+    <button id="folder" class="ghost small" type="button">📁 Открыть папку</button>
+    <details id="more">
+      <summary>Ещё</summary>
+      <button id="all" class="ghost small" type="button">Все вкладки</button>
+      <button id="logs" class="ghost small" type="button" title="Журналы работы — пригодятся, если что-то пошло не так">Файлы для разработчика</button>
+      <div class="ver" id="ver"></div>
+    </details>
   </footer>
   <script type="module" src="popup.js"></script>
 </body>

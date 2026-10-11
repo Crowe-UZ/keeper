@@ -104,11 +104,11 @@ def is_filler(text, seconds):
     return seconds < 1.5 and re.sub(r"[^a-zа-яё]", "", text.lower()) in FILLERS
 
 
-def to_text(pieces):
-    """Куски (начало, длительность, текст) -> текст абзацами. Абзац кончается на долгой паузе; если вырос
+def paragraphs(pieces):
+    """Куски (начало, длительность, текст) -> абзацы (начало, текст). Абзац кончается на долгой паузе; если вырос
     слишком большим — на ближайшем конце предложения, а если концов предложений нет вовсе — на любом стыке.
     Кусок, который идёт вплотную за оборванной фразой, не начинает новое предложение с заглавной буквы."""
-    paragraphs, current, last_end = [], [], None
+    done, current, began, last_end = [], [], 0.0, None
     for start, duration, text in pieces:
         text = text.strip()
         if not text:
@@ -119,17 +119,65 @@ def to_text(pieces):
         paused = gap is not None and gap > PARAGRAPH_PAUSE
         too_long = (size > PARAGRAPH_CHARS and ended) or size > PARAGRAPH_LIMIT
         if current and (paused or too_long):
-            paragraphs.append(" ".join(current))
+            done.append((began, " ".join(current)))
             current = []
         elif current and not ended and gap is not None and gap < FORCED_CUT:
             first = text.split()[0]
             if not (len(first.strip(".,!?…:;")) > 1 and first.isupper()):  # сокращение заглавными (JTBD) оставляем как есть
                 text = text[0].lower() + text[1:]
+        if not current:
+            began = start
         current.append(text)
         last_end = start + duration
     if current:
-        paragraphs.append(" ".join(current))
-    return "\n\n".join(paragraphs) + "\n" if paragraphs else ""
+        done.append((began, " ".join(current)))
+    return done
+
+
+def to_text(pieces):
+    """Обычный текст абзацами."""
+    parts = [text for _, text in paragraphs(pieces)]
+    return "\n\n".join(parts) + "\n" if parts else ""
+
+
+def stamp(seconds):
+    """Время для человека: 01:05, а с часа записи — 1:02:05."""
+    s = int(seconds)
+    return f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60:02d}:{s % 60:02d}"
+
+
+def to_timed(pieces):
+    """Текст абзацами, у каждого абзаца — время его начала: удобно искать место в записи."""
+    parts = [f"[{stamp(start)}] {text}" for start, text in paragraphs(pieces)]
+    return "\n\n".join(parts) + "\n" if parts else ""
+
+
+def srt_time(seconds):
+    ms = round(seconds * 1000)
+    return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}"
+
+
+def to_srt(pieces):
+    """Субтитры .srt. Кусок речи длится до 22 секунд — для субтитра это много, поэтому он делится по предложениям,
+    а время между ними распределяется по длине текста: точного времени каждого слова у нас нет."""
+    cues = []
+    for start, duration, text in pieces:
+        sentences = [x for x in re.split(r"(?<=[.!?…])\s+", text.strip()) if x]
+        total = sum(len(x) for x in sentences) or 1
+        at = start
+        for i, sentence in enumerate(sentences):
+            end = start + duration if i == len(sentences) - 1 else at + duration * len(sentence) / total
+            cues.append((at, end, sentence))
+            at = end
+    return "".join(f"{n}\n{srt_time(a)} --> {srt_time(b)}\n{text}\n\n" for n, (a, b, text) in enumerate(cues, 1))
+
+
+RENDER = {"txt": to_text, "timed": to_timed, "srt": to_srt}
+
+
+def render(pieces, form):
+    """Распознанные куски -> текст в выбранном виде: «txt» — абзацы, «timed» — абзацы со временем, «srt» — субтитры."""
+    return RENDER.get(form, to_text)(pieces)
 
 
 def duration_of(media):
@@ -265,7 +313,8 @@ def wait_turn(on_stage, should_stop):
 
 
 def transcribe(media, language="auto", on_stage=lambda stage, percent: None, should_stop=lambda: False):
-    """Распознать речь в файле. Возвращает (текст абзацами, имя модели).
+    """Распознать речь в файле. Возвращает (куски (начало, длительность, текст), имя модели);
+    в текст нужного вида их превращает render().
     on_stage(этап, процент) — «загрузка модели» или «распознавание»; should_stop() — пора прерваться."""
     try:
         import sherpa_onnx  # noqa: F401 — проверяем, что движок распознавания установлен, до долгой работы
@@ -297,4 +346,4 @@ def transcribe(media, language="auto", on_stage=lambda stage, percent: None, sho
     if total > 30 and sum(len(text.split()) for _, _, text in pieces) < 3:
         pieces = []  # одно-два слова на всю длинную запись — это не речь, а случайный звук
     log.debug(f"распознано кусков: {len(pieces)}, модель {name}, файл {Path(media).name}")
-    return to_text(pieces), name
+    return pieces, name

@@ -1,5 +1,5 @@
 import {
-  api, apiUp, startServer, isDown, buildJob, buildJobs, send, getCaught, getQuality, getWant, getLanguage, WANT,
+  api, apiUp, startServer, isDown, buildJob, buildJobs, send, getCaught, getQuality, getWant, getLanguage, getFormats, WANT,
   groupVideos, videoName, videoTitle, isKnownSite, clientLog,
 } from "./common.js";
 
@@ -43,6 +43,7 @@ function setState(s) {
   $("state").className = "state " + s;
   $("stateText").textContent = STATES[s];
   $("state").title = s === "off" ? "Нажми, чтобы запустить" : "";
+  $("state").disabled = s !== "off";
 }
 
 // Качалка сама закрывается, когда ей нечего делать, — при открытии окна будим её
@@ -64,6 +65,8 @@ $("state").onclick = () => {
 // поэтому кнопки берут видео и потоки отсюда, а не из момента отрисовки
 let videos = [];
 let items = [];
+let sending = false;  // идёт отправка задач — кнопку не даём нажать второй раз
+const web = /^https?:/.test(tab?.url || "");  // на chrome://, в PDF и на file:// качать нечего
 
 // innerHTML трогаем, только если разметка изменилась: иначе раз в секунду сбрасывались бы наведение и нажатия
 function draw(el, html) {
@@ -83,7 +86,9 @@ async function renderCaught() {
   videos = groupVideos(caught);
   items = [...caught.items].sort((a, b) => b.time - a.time);
   const many = !known && videos.length > 1;
-  let hint = known
+  let hint = !web
+    ? "Это служебная страница браузера — здесь качать нечего. Открой страницу с видео."
+    : known
     ? ""
     : many
       ? `На странице ${videos.length} видео: скачай все или выбери ниже. Наведи на строку — видео подсветится на странице.`
@@ -93,6 +98,7 @@ async function renderCaught() {
   if (caught.drm) hint += '<br><span class="warn">⚠ Видео защищено от копирования — скачать, скорее всего, не получится.</span>';
   $("hint").innerHTML = hint;
   $("go").textContent = many ? `⬇ Скачать все (${videos.length})` : "⬇ Скачать";
+  $("go").disabled = !web || sending;
 
   const best = new Set(videos.map((v) => v.best));
   const html = !items.length ? "" : `<div class="section">Видео на странице<span>${videos.length > 1 ? videos.length : ""}</span></div>` + videos.map((v, n) => `
@@ -210,8 +216,8 @@ function jobHtml(j) {
       }${
         j.error || j.status === "отменено" ? `<button class="ghost small" data-act="/retry" data-id="${esc(j.id)}">↻ Повторить</button>` : ""
       }${
-        done && j.has_file ? `<button class="ghost small" data-act="/open-file" data-id="${esc(j.id)}">▶ Открыть</button><button class="ghost small" data-act="/show-file" data-id="${esc(j.id)}">📂 В папке</button>` : ""
-      }${j.has_log ? `<button class="ghost small" data-act="/open-log" data-id="${esc(j.id)}">Лог</button>` : ""}</div>
+        done && j.has_file ? `<button class="ghost small" data-act="/open-file" data-id="${esc(j.id)}">▶ Открыть файл</button><button class="ghost small" data-act="/show-file" data-id="${esc(j.id)}">📂 Показать в папке</button>` : ""
+      }${j.has_log && (j.error || j.status === "отменено") ? `<button class="ghost small" data-act="/open-log" data-id="${esc(j.id)}" title="Журнал этой загрузки — что именно не получилось">Что пошло не так</button>` : ""}</div>
     </div>`;
 }
 
@@ -255,7 +261,11 @@ for (const t of await chrome.tabs.query({})) {
 $("all").textContent = `Скачать со всех вкладок с видео (${allTabs.length})`;
 $("all").disabled = !allTabs.length;
 
-$("go").onclick = () => run(async () => submit(await buildJobs(tab)));
+$("go").onclick = async () => {
+  sending = true;  // двойной щелчок не должен ставить загрузку дважды
+  $("go").disabled = true;
+  try { await run(async () => submit(await buildJobs(tab))); } finally { sending = false; $("go").disabled = !web; }
+};
 $("all").onclick = () => run(async () => {
   const jobs = [];
   for (const t of allTabs) jobs.push(...await buildJobs(t));
@@ -265,8 +275,10 @@ $("all").onclick = () => run(async () => {
 // что получить: три переключателя, хотя бы один всегда включён; выбор запоминается
 let want = await getWant();
 function showWant() {
-  document.querySelectorAll("#want .chip").forEach((c) => c.classList.toggle("on", want.includes(c.dataset.want)));
-  $("languageRow").hidden = !want.includes("text");  // язык речи нужен только для текста
+  document.querySelectorAll("#want .chip").forEach((c) => {
+    c.classList.toggle("on", want.includes(c.dataset.want));
+    c.setAttribute("aria-pressed", want.includes(c.dataset.want));
+  });
 }
 document.querySelectorAll("#want .chip").forEach((c) => {
   c.onclick = () => {
@@ -280,6 +292,18 @@ document.querySelectorAll("#want .chip").forEach((c) => {
 showWant();
 $("language").value = await getLanguage();
 $("language").onchange = () => chrome.storage.local.set({ language: $("language").value });
+
+// настройки: в каком виде сохранять видео, звук и текст
+const formats = await getFormats();
+for (const [id, kind, fallback] of [["fVideo", "video", "mp4"], ["fAudio", "audio", "m4a"], ["fText", "text", "txt"]]) {
+  $(id).value = formats[kind] || fallback;
+  $(id).onchange = () => { formats[kind] = $(id).value; chrome.storage.local.set({ formats }); };
+}
+$("gear").onclick = () => {
+  const open = $("settings").hidden;
+  $("settings").hidden = !open;
+  $("gear").setAttribute("aria-expanded", open);
+};
 
 $("quality").value = String(await getQuality());
 $("quality").onchange = () => chrome.storage.local.set({ quality: +$("quality").value });

@@ -1,21 +1,51 @@
-// Сквозная проверка: настоящее расширение в браузере + настоящая качалка. Каждая кнопка окна.
-import puppeteer from "puppeteer";
-
-// Запуск: качалка должна работать (start.bat), затем в этой папке: npm install && npm test
+// Сквозная проверка: настоящее расширение в браузере + настоящая программа. Каждая кнопка окна.
+//
+// Запуск: программа должна работать (start.bat), затем в этой папке: npm install && npm test
 // NO_WINDOWS=1 — не нажимать кнопки, которые открывают окна Windows.
+//
+// Видео для проверки создаётся на месте (ffmpeg: цветные полосы и тон, два варианта качества) и раздаётся отсюда же:
+// раньше тест качал чужие тестовые ролики из интернета и «падал», когда тот сервер тормозил.
+import puppeteer from "puppeteer";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const EXT = resolve(HERE, "..", "..", "extension");
+const SITE = join(HERE, "site");
 
-// Тестовый «урок»: страница с двумя плеерами в iframe. Отдаём её сами, чтобы тесту ничего не требовалось снаружи.
+// Два тестовых «урока» в HLS: у каждого общий список качеств (master.m3u8) и два качества, звук вшит в видео —
+// как на платформах курсов. Создаются один раз, лежат в site/gen (в git не входят).
+function makeVideo(n, seconds, tone) {
+  const dir = join(SITE, "gen", String(n));
+  if (existsSync(join(dir, "master.m3u8"))) return;
+  mkdirSync(dir, { recursive: true });
+  execFileSync("ffmpeg", ["-v", "error", "-y",
+    "-f", "lavfi", "-i", `testsrc2=size=1280x720:rate=25:duration=${seconds}`,
+    "-f", "lavfi", "-i", `sine=frequency=${tone}:duration=${seconds}`,
+    "-map", "0:v", "-map", "1:a", "-map", "0:v", "-map", "1:a",
+    "-s:v:0", "640x360", "-b:v:0", "300k", "-s:v:1", "1280x720", "-b:v:1", "900k",
+    "-c:v", "libx264", "-preset", "ultrafast", "-g", "50", "-c:a", "aac", "-b:a", "96k",
+    "-f", "hls", "-hls_time", "4", "-hls_playlist_type", "vod", "-master_pl_name", "master.m3u8",
+    "-hls_segment_filename", join(dir, "q%v_%03d.ts"),
+    "-var_stream_map", "v:0,a:0 v:1,a:1", join(dir, "q%v.m3u8")], { cwd: dir, stdio: "inherit" });
+}
+makeVideo(1, 40, 440);
+makeVideo(2, 30, 660);
+
+// Тестовый «урок»: страница с двумя плеерами в iframe и их видео. Отдаём всё сами.
+// Куски лучшего качества (q1_…) отдаём с задержкой: иначе маленький ролик скачивается за миг и тест не успевает
+// увидеть «скачивается» и нажать «Отмена». Плеер на странице играет младшее качество и задержки не замечает.
+const SLOW = 6000;
+const TYPES = { ".html": "text/html; charset=utf-8", ".m3u8": "application/vnd.apple.mpegurl", ".ts": "video/mp2t" };
 const site = createServer(async (req, res) => {
-  const name = new URL(req.url, "http://x").pathname.slice(1);
-  if (!["page.html", "player.html"].includes(name)) return res.writeHead(404).end();
-  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(await readFile(join(HERE, "site", name)));
+  const file = normalize(join(SITE, decodeURIComponent(new URL(req.url, "http://x").pathname)));
+  if (!file.startsWith(SITE) || !TYPES[extname(file)] || !existsSync(file)) return res.writeHead(404).end();
+  if (/[\\/]q1_\d+\.ts$/.test(file)) await new Promise((r) => setTimeout(r, SLOW));
+  res.writeHead(200, { "Content-Type": TYPES[extname(file)] }).end(await readFile(file));
 }).listen(5612, "127.0.0.1");
 const ID = "haolabffcigdogdogoglgmgjkjibjnfc";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -73,7 +103,7 @@ try {
   const cardBtn = async (n, ...want) => { await choose(...want); await popup.click(`.video[data-n="${n}"] button`); };
 
   // ---- окно: состояние, список видео ----
-  check("качалка отвечает", (await text("#stateText")) === "работает", await text("#stateText"));
+  check("программа отвечает (значок состояния скрыт, когда всё в порядке)", await popup.$eval("#state", (e) => e.classList.contains("on")));
   // как в жизни: вкладка с видео на виду (в фоновой вкладке браузер ставит видео на паузу), окно расширения — поверх неё
   await lesson.bringToFront();
   await sleep(5000);
@@ -93,10 +123,17 @@ try {
   check("по умолчанию отмечено только «Видео»", (await popup.$$eval("#want .chip.on", (c) => c.map((x) => x.dataset.want))).join() === "video");
   await popup.click('#want .chip[data-want="video"]');
   check("последний переключатель снять нельзя", (await popup.$$("#want .chip.on")).length === 1);
-  check("язык речи скрыт, пока текст не нужен", await popup.$eval("#languageRow", (r) => r.hidden));
-  await choose("video", "text");
-  check("язык речи появляется вместе с «Текстом»", !(await popup.$eval("#languageRow", (r) => r.hidden)));
-  await choose("video");
+  // ---- настройки: открываются шестерёнкой, выбор форматов запоминается ----
+  check("настройки по умолчанию свёрнуты", await popup.$eval("#settings", (x) => x.hidden));
+  await popup.click("#gear");
+  check("шестерёнка открывает настройки", !(await popup.$eval("#settings", (x) => x.hidden)));
+  check("форматы по умолчанию: mp4, m4a, txt", (await popup.$$eval("#fVideo, #fAudio, #fText", (x) => x.map((e) => e.value))).join() === "mp4,m4a,txt");
+  await popup.select("#fText", "srt");
+  await sleep(300);
+  check("выбранный вид текста запоминается", (await sw.evaluate(async () => (await chrome.storage.local.get("formats")).formats?.text)) === "srt");
+  await popup.select("#fText", "txt");
+  await popup.click("#gear");
+  check("шестерёнка сворачивает настройки обратно", await popup.$eval("#settings", (x) => x.hidden));
   check("папка показана", !!(await text("#folderPath")), await text("#folderPath"));
 
   // ---- «Подробнее» не схлопывается при обновлении списка ----
@@ -116,9 +153,14 @@ try {
   check("подсветка снимается", !(await lesson.$eval("#p2", (f) => f.style.outline)));
 
   // ---- качество ----
+  await popup.click("#gear");
   await popup.select("#quality", "480");
+  await popup.click("#gear");
   await sleep(300);
   check("качество запоминается", (await sw.evaluate(async () => (await chrome.storage.local.get("quality")).quality)) === 480);
+  await popup.click("#gear");
+  await popup.select("#quality", "0");  // дальше качаем лучшее качество: оно у тестового сервера «медленное»
+  await popup.click("#gear");
 
   // ---- видео 2: скачать -> отмена -> повторить -> готово ----
   await cardBtn(1, "video");
@@ -132,7 +174,7 @@ try {
   await clickAct("видео 2", "Повторить");
   j = await waitJob((x) => x.title.includes("видео 2") && (x.st.startsWith("готово") || x.st.startsWith("ошибка")));
   check("«Повторить» докачивает до конца", !!j?.st.startsWith("готово"), j?.st);
-  check("у готовой есть «Открыть», «В папке», «Лог»", ["Открыть", "В папке", "Лог"].every((l) => j?.acts.some((a) => a.includes(l))), j?.acts.join(","));
+  check("у готовой есть «Открыть файл» и «Показать в папке»", ["Открыть файл", "Показать в папке"].every((l) => j?.acts.some((a) => a.includes(l))), j?.acts.join(","));
 
   // ---- повторная загрузка того же видео ----
   await cardBtn(1, "video");
@@ -174,10 +216,9 @@ try {
   // ---- кнопки, которые открывают окна Windows (сам запрос должен пройти без ошибки) ----
   // эти кнопки открывают окна Windows поверх остальных — при NO_WINDOWS=1 их не трогаем
   for (const [name, fn] of process.env.NO_WINDOWS ? [] : [
-    ["«Лог» у загрузки", () => clickAct("видео 2", "Лог")],
-    ["«В папке» у готовой", () => clickAct("видео 2", "В папке")],
-    ["«Открыть» папку с видео", () => popup.click("#folder")],
-    ["«Логи»", () => popup.click("#logs")],
+    ["«Показать в папке» у готовой", () => clickAct("видео 2", "Показать в папке")],
+    ["«Открыть папку»", () => popup.click("#folder")],
+    ["«Файлы для разработчика»", async () => { await popup.$eval("#more", (d) => { d.open = true; }); await popup.click("#logs"); }],
   ]) {
     await fn();
     await sleep(1500);

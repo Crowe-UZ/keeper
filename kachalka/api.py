@@ -14,7 +14,7 @@ from .config import (FINAL, HEIGHTS, LOG_DIR, log, save_settings)
 from . import state
 from .state import jobs, lock, stopping, summary, tasks
 from .history import already_downloaded, job_key
-from .outputs import clean_want, download_mode, want_label
+from .outputs import clean_formats, clean_want, download_mode, want_label
 from .system import FFMPEG_DIR
 from .windows import open_in_front, open_path
 
@@ -51,6 +51,7 @@ def parse_job(data):
         "headers": {k: v for k, v in headers.items() if k in ("Referer", "Origin", "User-Agent") and isinstance(v, str)},
         "cookies": cookies,
         "debug": data.get("debug") if isinstance(data.get("debug"), dict) else {},
+        "formats": clean_formats(data.get("formats")),  # какой вид у видео, звука и текста — из настроек окна
         "force": bool(data.get("force")),  # «Скачать ещё раз» в окне расширения
     }
 
